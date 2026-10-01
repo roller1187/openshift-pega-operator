@@ -1,0 +1,11 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: pega-operator
+  namespace: pega-operator-system
+spec:
+  channel: alpha
+  name: pega-operator
+  source: pega-operator-catalog
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Automatic

@@ -1,0 +1,11 @@
+bin/
+vendor/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+cover.out
+testbin/
+.DS_Store

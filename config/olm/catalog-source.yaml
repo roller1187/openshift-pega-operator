@@ -1,0 +1,13 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: pega-operator-catalog
+  namespace: openshift-marketplace
+spec:
+  sourceType: grpc
+  image: quay.io/aromero/pega-operator-catalog:latest
+  displayName: Pega Operator
+  publisher: Red Hat
+  updateStrategy:
+    registryPoll:
+      interval: 10m

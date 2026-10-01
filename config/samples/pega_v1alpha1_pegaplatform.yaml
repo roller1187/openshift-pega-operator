@@ -1,0 +1,99 @@
+apiVersion: pega.openshift.io/v1alpha1
+kind: PegaPlatform
+metadata:
+  name: pega
+  namespace: pega
+spec:
+  # Container image registry (OpenShift internal registry)
+  imageRegistry:
+    url: "image-registry.openshift-image-registry.svc:5000/pega"
+
+  # Pega platform image (loaded from pega_23_1_1.tar)
+  pegaImage: "image-registry.openshift-image-registry.svc:5000/pega/pega:23.1.1"
+
+  # Managed PostgreSQL database
+  database:
+    managed: true
+    username: "pega"
+    password: "pega123"
+    storageSize: "100Gi"
+    storageClass: "gp3-csi"
+    rulesSchema: "rules"
+    dataSchema: "data"
+
+  # Managed OpenSearch cluster
+  search:
+    managed: true
+    replicas: 3
+    storageSize: "30Gi"
+    storageClass: "gp3-csi"
+    javaOpts: "-Xms512m -Xmx512m"
+
+  # Managed Kafka via Strimzi/AMQ Streams
+  stream:
+    enabled: true
+    managed: true
+    replicas: 3
+    storageSize: "100Gi"
+    storageClass: "gp3-csi"
+    version: "3.7.0"
+    replicationFactor: 3
+    zookeeperReplicas: 3
+    zookeeperStorageSize: "10Gi"
+
+  # Search and Reporting Service
+  srs:
+    enabled: true
+    image: "image-registry.openshift-image-registry.svc:5000/pega/srs:1.35.0"
+    replicas: 2
+    deploymentName: "pega-search"
+
+  # Schema installer
+  installer:
+    image: "image-registry.openshift-image-registry.svc:5000/pega/installer:23.1.1"
+    adminPassword: "Openshift123!"
+    upgradeType: "in-place"
+
+  # Platform tiers
+  tiers:
+    - name: "web"
+      nodeType: "WebUser"
+      replicas: 1
+      resources:
+        requests:
+          memory: "12Gi"
+          cpu: "3"
+        limits:
+          memory: "12Gi"
+          cpu: "4"
+      service:
+        port: 80
+        targetPort: 8080
+        httpEnabled: true
+      ingress:
+        enabled: true
+        domain: "pega-pega.apps.aromerot.redhat-openshift.com"
+        tls:
+          enabled: true
+          termination: "edge"
+      hpa:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 5
+        targetCPUUtilization: 70
+
+    - name: "batch"
+      nodeType: "BackgroundProcessing,Search,Batch,RealTime,Custom1,Custom2,Custom3,Custom4,Custom5,BIX"
+      replicas: 1
+      resources:
+        requests:
+          memory: "12Gi"
+          cpu: "3"
+        limits:
+          memory: "12Gi"
+          cpu: "4"
+      hpa:
+        enabled: true
+        minReplicas: 1
+        maxReplicas: 3
+        targetCPUUtilization: 70

@@ -1,0 +1,16 @@
+domain: openshift.io
+layout:
+- go.kubebuilder.io/v4
+projectName: pega-operator
+repo: github.com/redhat-et/pega-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: openshift.io
+  group: pega
+  kind: PegaPlatform
+  path: github.com/redhat-et/pega-operator/api/v1alpha1
+  version: v1alpha1
+version: "3"

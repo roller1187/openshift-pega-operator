@@ -1,0 +1,257 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "pega.openshift.io/v1alpha1",
+          "kind": "PegaPlatform",
+          "metadata": {
+            "name": "pega",
+            "namespace": "pega"
+          },
+          "spec": {
+            "pegaImage": "image-registry.openshift-image-registry.svc:5000/pega/pega:23.1.1",
+            "imageRegistry": {
+              "url": "image-registry.openshift-image-registry.svc:5000/pega"
+            },
+            "database": {
+              "managed": true,
+              "username": "pega",
+              "password": "pega123",
+              "storageSize": "100Gi"
+            },
+            "search": {
+              "managed": true,
+              "replicas": 3,
+              "storageSize": "30Gi"
+            },
+            "stream": {
+              "enabled": true,
+              "managed": true,
+              "replicas": 3
+            },
+            "srs": {
+              "enabled": true,
+              "image": "image-registry.openshift-image-registry.svc:5000/pega/srs:1.35.0",
+              "replicas": 2
+            },
+            "installer": {
+              "image": "image-registry.openshift-image-registry.svc:5000/pega/installer:23.1.1",
+              "adminPassword": "Admin123!"
+            },
+            "tiers": [
+              {
+                "name": "web",
+                "nodeType": "WebUser",
+                "replicas": 1,
+                "ingress": {
+                  "enabled": true,
+                  "domain": "pega.apps.example.com",
+                  "tls": { "enabled": true }
+                }
+              },
+              {
+                "name": "batch",
+                "nodeType": "BackgroundProcessing,Search,Batch,RealTime,Custom1,Custom2,Custom3,Custom4,Custom5,BIX",
+                "replicas": 1
+              }
+            ]
+          }
+        }
+      ]
+    capabilities: Full Lifecycle
+    categories: Application Runtime
+    containerImage: quay.io/aromero/pega-operator:v0.1.0
+    description: Deploys and manages Pega Platform on OpenShift with PostgreSQL, OpenSearch, Kafka, and SRS.
+    repository: https://github.com/roller1187/openshift-pega-operator
+  name: pega-operator.v0.1.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+      - kind: PegaPlatform
+        name: pegaplatforms.pega.openshift.io
+        version: v1alpha1
+        displayName: Pega Platform
+        description: Deploys and manages a complete Pega Platform stack including database, search, streaming, SRS, and application tiers.
+        resources:
+          - kind: Deployment
+            name: ""
+            version: apps/v1
+          - kind: StatefulSet
+            name: ""
+            version: apps/v1
+          - kind: Service
+            name: ""
+            version: v1
+          - kind: Job
+            name: ""
+            version: batch/v1
+          - kind: Route
+            name: ""
+            version: route.openshift.io/v1
+        specDescriptors:
+          - path: pegaImage
+            displayName: Pega Image
+            description: Container image for the Pega platform
+          - path: database.managed
+            displayName: Managed Database
+            description: Deploy a managed PostgreSQL instance
+          - path: search.managed
+            displayName: Managed Search
+            description: Deploy a managed OpenSearch cluster
+          - path: stream.enabled
+            displayName: Streaming Enabled
+            description: Enable Kafka streaming
+          - path: srs.enabled
+            displayName: SRS Enabled
+            description: Enable Search and Reporting Service
+        statusDescriptors:
+          - path: phase
+            displayName: Phase
+            description: Current deployment phase
+          - path: webURL
+            displayName: Web URL
+            description: URL to access the Pega web interface
+  description: |
+    ## Pega Platform Operator for OpenShift
+
+    Automates the deployment and lifecycle management of Pega Platform on OpenShift,
+    following Red Hat operator best practices.
+
+    ### Components Managed
+    - **PostgreSQL** — Managed or external relational database
+    - **OpenSearch** — Managed or external search cluster
+    - **Apache Kafka** — Managed via Strimzi/AMQ Streams or external
+    - **Search and Reporting Service (SRS)** — Pega's search integration layer
+    - **Pega Installer** — One-time schema creation job
+    - **Platform Tiers** — Web and batch tier deployments with HPA and Routes
+
+    ### Deployment Phases
+    The operator progresses through ordered phases:
+    Database → Search → Streaming → SRS → Installer → Platform
+
+    Each phase includes health checks before advancing to the next.
+
+    ### Prerequisites
+    - OpenShift 4.14+
+    - Pega container images loaded into an accessible registry
+    - AMQ Streams / Strimzi operator (if using managed Kafka)
+  displayName: Pega Platform Operator
+  icon:
+    - base64data: ""
+      mediatype: image/png
+  install:
+    strategy: deployment
+    spec:
+      clusterPermissions:
+        - rules:
+            - apiGroups: ["pega.openshift.io"]
+              resources: ["pegaplatforms"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["pega.openshift.io"]
+              resources: ["pegaplatforms/status"]
+              verbs: ["get", "patch", "update"]
+            - apiGroups: ["pega.openshift.io"]
+              resources: ["pegaplatforms/finalizers"]
+              verbs: ["update"]
+            - apiGroups: [""]
+              resources: ["pods", "services", "persistentvolumeclaims", "secrets", "configmaps", "serviceaccounts"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["apps"]
+              resources: ["deployments", "statefulsets"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["batch"]
+              resources: ["jobs"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["autoscaling"]
+              resources: ["horizontalpodautoscalers"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["networking.k8s.io"]
+              resources: ["networkpolicies"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["route.openshift.io"]
+              resources: ["routes", "routes/custom-host"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["kafka.strimzi.io"]
+              resources: ["kafkas"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["apiextensions.k8s.io"]
+              resources: ["customresourcedefinitions"]
+              verbs: ["get", "list"]
+          serviceAccountName: pega-operator-controller-manager
+      deployments:
+        - name: pega-operator-controller-manager
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                control-plane: controller-manager
+            template:
+              metadata:
+                labels:
+                  control-plane: controller-manager
+              spec:
+                securityContext:
+                  runAsNonRoot: true
+                serviceAccountName: pega-operator-controller-manager
+                containers:
+                  - name: manager
+                    image: quay.io/aromero/pega-operator:v0.1.0
+                    command: ["/manager"]
+                    args: ["--leader-elect"]
+                    ports:
+                      - containerPort: 8080
+                        name: metrics
+                      - containerPort: 8081
+                        name: health
+                    livenessProbe:
+                      httpGet:
+                        path: /healthz
+                        port: 8081
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+                    readinessProbe:
+                      httpGet:
+                        path: /readyz
+                        port: 8081
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    resources:
+                      limits:
+                        cpu: 500m
+                        memory: 256Mi
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop: ["ALL"]
+                terminationGracePeriodSeconds: 10
+  installModes:
+    - type: OwnNamespace
+      supported: true
+    - type: SingleNamespace
+      supported: true
+    - type: MultiNamespace
+      supported: false
+    - type: AllNamespaces
+      supported: true
+  keywords:
+    - pega
+    - platform
+    - bpm
+    - crm
+    - openshift
+  maintainers:
+    - name: Red Hat
+      email: aromero@redhat.com
+  maturity: alpha
+  provider:
+    name: Red Hat
+  version: 0.1.0
+  replaces: ""

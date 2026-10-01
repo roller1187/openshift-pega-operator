@@ -1,0 +1,544 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: pegaplatforms.pega.openshift.io
+spec:
+  group: pega.openshift.io
+  names:
+    kind: PegaPlatform
+    listKind: PegaPlatformList
+    plural: pegaplatforms
+    shortNames:
+    - pega
+    singular: pegaplatform
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              database:
+                description: Database configuration for the Pega rules and data schemas
+                properties:
+                  credentialsSecret:
+                    description: Reference to a Secret containing DB_USERNAME and
+                      DB_PASSWORD keys
+                    type: string
+                  dataSchema:
+                    default: data
+                    description: Pega data schema name
+                    type: string
+                  driverClass:
+                    default: org.postgresql.Driver
+                    description: JDBC driver class
+                    type: string
+                  driverUri:
+                    default: https://jdbc.postgresql.org/download/postgresql-42.7.5.jar
+                    description: JDBC driver download URL
+                    type: string
+                  image:
+                    default: registry.redhat.io/rhel8/postgresql-12:latest
+                    description: PostgreSQL container image (managed mode only)
+                    type: string
+                  managed:
+                    default: true
+                    description: Deploy a managed PostgreSQL instance
+                    type: boolean
+                  password:
+                    description: Database password
+                    type: string
+                  rulesSchema:
+                    default: rules
+                    description: Pega rules schema name
+                    type: string
+                  storageClass:
+                    description: StorageClass for managed PostgreSQL PVC
+                    type: string
+                  storageSize:
+                    default: 100Gi
+                    description: Storage size for managed PostgreSQL PVC
+                    type: string
+                  type:
+                    default: postgres
+                    description: 'Database type: postgres, mssql, oracledate, udb,
+                      db2zos'
+                    enum:
+                    - postgres
+                    - mssql
+                    - oracledate
+                    - udb
+                    - db2zos
+                    type: string
+                  url:
+                    description: JDBC connection URL (required when Managed=false)
+                    type: string
+                  username:
+                    description: Database username
+                    type: string
+                type: object
+              imageRegistry:
+                description: Container image registry settings
+                properties:
+                  pullSecretNames:
+                    description: Image pull secret names
+                    items:
+                      type: string
+                    type: array
+                  url:
+                    description: Registry URL (e.g. image-registry.openshift-image-registry.svc:5000/pega)
+                    type: string
+                required:
+                - url
+                type: object
+              installer:
+                description: Pega installer configuration (schema creation / upgrade)
+                properties:
+                  adminPassword:
+                    description: Initial administrator password (administrator@pega.com)
+                    type: string
+                  adminPasswordSecret:
+                    description: Secret containing ADMIN_PASSWORD key
+                    type: string
+                  image:
+                    description: Pega installer container image
+                    type: string
+                  upgradeType:
+                    default: in-place
+                    description: 'Upgrade type: in-place, zero-downtime, custom, out-of-place-rules,
+                      out-of-place-data'
+                    type: string
+                required:
+                - image
+                type: object
+              pegaImage:
+                description: Pega platform container image
+                type: string
+              search:
+                description: Search engine (OpenSearch) configuration
+                properties:
+                  credentialsSecret:
+                    description: Reference to a Secret containing username and password
+                      keys
+                    type: string
+                  image:
+                    default: docker.io/opensearchproject/opensearch:2.19.1
+                    description: OpenSearch container image
+                    type: string
+                  javaOpts:
+                    default: -Xms512m -Xmx512m
+                    description: JVM options for OpenSearch
+                    type: string
+                  managed:
+                    default: true
+                    description: Deploy a managed OpenSearch cluster
+                    type: boolean
+                  password:
+                    description: OpenSearch password
+                    type: string
+                  port:
+                    default: 9200
+                    description: OpenSearch port
+                    format: int32
+                    type: integer
+                  protocol:
+                    default: http
+                    description: Connection protocol
+                    enum:
+                    - http
+                    - https
+                    type: string
+                  replicas:
+                    default: 3
+                    description: Number of OpenSearch replicas (managed mode)
+                    format: int32
+                    type: integer
+                  storageClass:
+                    description: StorageClass for OpenSearch PVCs
+                    type: string
+                  storageSize:
+                    default: 30Gi
+                    description: PVC size per OpenSearch node
+                    type: string
+                  url:
+                    description: OpenSearch endpoint (required when Managed=false)
+                    type: string
+                  username:
+                    description: OpenSearch username
+                    type: string
+                type: object
+              srs:
+                description: Search and Reporting Service configuration
+                properties:
+                  authEnabled:
+                    default: false
+                    description: Enable authentication between SRS and Pega
+                    type: boolean
+                  deploymentName:
+                    default: pega-search
+                    description: SRS deployment name (used as a reference from Pega
+                      tiers)
+                    type: string
+                  enabled:
+                    default: true
+                    description: Enable SRS deployment
+                    type: boolean
+                  image:
+                    description: SRS container image
+                    type: string
+                  replicas:
+                    default: 2
+                    description: Number of SRS replicas
+                    format: int32
+                    type: integer
+                required:
+                - enabled
+                - image
+                type: object
+              stream:
+                description: Kafka streaming configuration
+                properties:
+                  bootstrapServer:
+                    description: Kafka bootstrap server address (required when Managed=false)
+                    type: string
+                  enabled:
+                    default: true
+                    description: Enable Kafka streaming
+                    type: boolean
+                  managed:
+                    default: true
+                    description: Deploy Kafka via Strimzi (requires AMQ Streams /
+                      Strimzi operator)
+                    type: boolean
+                  replicas:
+                    default: 3
+                    description: Kafka broker replicas (managed mode)
+                    format: int32
+                    type: integer
+                  replicationFactor:
+                    default: 3
+                    description: Topic replication factor
+                    format: int32
+                    type: integer
+                  securityProtocol:
+                    default: PLAINTEXT
+                    description: 'Security protocol: PLAINTEXT, SSL, SASL_PLAINTEXT,
+                      SASL_SSL'
+                    type: string
+                  storageClass:
+                    description: StorageClass for Kafka PVCs
+                    type: string
+                  storageSize:
+                    default: 100Gi
+                    description: PVC size per Kafka broker
+                    type: string
+                  version:
+                    default: 3.7.0
+                    description: Kafka version
+                    type: string
+                  zookeeperReplicas:
+                    default: 3
+                    description: ZooKeeper replicas (managed mode)
+                    format: int32
+                    type: integer
+                  zookeeperStorageSize:
+                    default: 10Gi
+                    description: ZooKeeper PVC size
+                    type: string
+                required:
+                - enabled
+                type: object
+              tiers:
+                description: Platform tier definitions (web, batch, etc.)
+                items:
+                  description: TierSpec defines a Pega platform tier (web, batch,
+                    stream, etc.).
+                  properties:
+                    hpa:
+                      description: Horizontal Pod Autoscaler configuration
+                      properties:
+                        enabled:
+                          default: true
+                          description: Enable HPA
+                          type: boolean
+                        maxReplicas:
+                          default: 5
+                          format: int32
+                          type: integer
+                        minReplicas:
+                          default: 1
+                          format: int32
+                          type: integer
+                        targetCPUUtilization:
+                          default: 70
+                          description: Target CPU utilization percentage
+                          format: int32
+                          type: integer
+                      required:
+                      - enabled
+                      type: object
+                    ingress:
+                      description: Ingress / Route configuration (typically for web
+                        tier)
+                      properties:
+                        domain:
+                          description: Hostname for the Route
+                          type: string
+                        enabled:
+                          default: true
+                          description: Enable Route creation
+                          type: boolean
+                        tls:
+                          description: TLS configuration
+                          properties:
+                            enabled:
+                              default: true
+                              description: Enable TLS
+                              type: boolean
+                            termination:
+                              default: edge
+                              description: 'TLS termination type: edge, reencrypt,
+                                passthrough'
+                              enum:
+                              - edge
+                              - reencrypt
+                              - passthrough
+                              type: string
+                          required:
+                          - enabled
+                          type: object
+                      required:
+                      - domain
+                      - enabled
+                      type: object
+                    javaOpts:
+                      description: JVM options
+                      type: string
+                    name:
+                      description: Tier name
+                      type: string
+                    nodeType:
+                      description: Pega node type
+                      type: string
+                    replicas:
+                      default: 1
+                      description: Number of replicas
+                      format: int32
+                      type: integer
+                    resources:
+                      description: Pod resource requirements
+                      properties:
+                        claims:
+                          description: |-
+                            Claims lists the names of resources, defined in spec.resourceClaims,
+                            that are used by this container.
+
+                            This is an alpha field and requires enabling the
+                            DynamicResourceAllocation feature gate.
+
+                            This field is immutable. It can only be set for containers.
+                          items:
+                            description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                            properties:
+                              name:
+                                description: |-
+                                  Name must match the name of one entry in pod.spec.resourceClaims of
+                                  the Pod where this field is used. It makes that resource available
+                                  inside a container.
+                                type: string
+                              request:
+                                description: |-
+                                  Request is the name chosen for a request in the referenced claim.
+                                  If empty, everything from the claim is made available, otherwise
+                                  only the result of this request.
+                                type: string
+                            required:
+                            - name
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - name
+                          x-kubernetes-list-type: map
+                        limits:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            Limits describes the maximum amount of compute resources allowed.
+                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                          type: object
+                        requests:
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          description: |-
+                            Requests describes the minimum amount of compute resources required.
+                            If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                            otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                            More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                          type: object
+                      type: object
+                    service:
+                      description: Service configuration
+                      properties:
+                        httpEnabled:
+                          default: true
+                          type: boolean
+                        port:
+                          default: 80
+                          format: int32
+                          type: integer
+                        targetPort:
+                          default: 8080
+                          format: int32
+                          type: integer
+                      type: object
+                  required:
+                  - name
+                  - nodeType
+                  - replicas
+                  type: object
+                type: array
+            required:
+            - database
+            - imageRegistry
+            - installer
+            - pegaImage
+            - search
+            - srs
+            - stream
+            - tiers
+            type: object
+          status:
+            description: PegaPlatformStatus defines the observed state of PegaPlatform.
+            properties:
+              conditions:
+                description: Standard Kubernetes conditions
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              installerJobName:
+                description: Name of the installer Job (if running or completed)
+                type: string
+              message:
+                description: Human-readable message about the current state
+                type: string
+              phase:
+                allOf:
+                - enum:
+                  - Pending
+                  - Database
+                  - Search
+                  - Streaming
+                  - SRS
+                  - Installing
+                  - Deploying
+                  - Ready
+                  - Failed
+                - enum:
+                  - Pending
+                  - Database
+                  - Search
+                  - Streaming
+                  - SRS
+                  - Installing
+                  - Deploying
+                  - Ready
+                  - Failed
+                description: Current deployment phase
+                type: string
+              webURL:
+                description: URL to access the Pega web interface
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

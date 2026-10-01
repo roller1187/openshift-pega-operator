@@ -1,0 +1,8 @@
+namespace: pega-operator-system
+
+namePrefix: pega-operator-
+
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
