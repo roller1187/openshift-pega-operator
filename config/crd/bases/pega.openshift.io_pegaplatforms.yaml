@@ -248,6 +248,11 @@ spec:
                     description: Topic replication factor
                     format: int32
                     type: integer
+                  saslMechanism:
+                    default: PLAIN
+                    description: 'SASL mechanism: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
+                      (only used with SASL_PLAINTEXT or SASL_SSL)'
+                    type: string
                   securityProtocol:
                     default: PLAINTEXT
                     description: 'Security protocol: PLAINTEXT, SSL, SASL_PLAINTEXT,
@@ -261,17 +266,8 @@ spec:
                     description: PVC size per Kafka broker
                     type: string
                   version:
-                    default: 3.7.0
+                    default: 4.1.0
                     description: Kafka version
-                    type: string
-                  zookeeperReplicas:
-                    default: 3
-                    description: ZooKeeper replicas (managed mode)
-                    format: int32
-                    type: integer
-                  zookeeperStorageSize:
-                    default: 10Gi
-                    description: ZooKeeper PVC size
                     type: string
                 required:
                 - enabled
@@ -310,12 +306,18 @@ spec:
                         tier)
                       properties:
                         domain:
-                          description: Hostname for the Route
+                          description: Hostname for the Route (leave empty to auto-detect
+                            from cluster domain using routePrefix)
                           type: string
                         enabled:
                           default: true
                           description: Enable Route creation
                           type: boolean
+                        routePrefix:
+                          default: pega
+                          description: Prefix prepended to the cluster apps domain
+                            when auto-generating the Route hostname
+                          type: string
                         tls:
                           description: TLS configuration
                           properties:
@@ -336,7 +338,6 @@ spec:
                           - enabled
                           type: object
                       required:
-                      - domain
                       - enabled
                       type: object
                     javaOpts:

@@ -39,9 +39,6 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 		return true, nil
 	}
 
-	logger.Info("reconciling managed Kafka cluster via Strimzi")
-
-	// Verify the Strimzi Kafka CRD exists
 	if !r.crdExists(ctx, "kafkas.kafka.strimzi.io") {
 		meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
 			Type:    pegav1alpha1.ConditionStreamReady,
@@ -59,19 +56,11 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 	}
 	version := pega.Spec.Stream.Version
 	if version == "" {
-		version = "3.7.0"
+		version = "4.1.0"
 	}
 	kafkaStorageSize := pega.Spec.Stream.StorageSize
 	if kafkaStorageSize == "" {
 		kafkaStorageSize = "100Gi"
-	}
-	zkReplicas := pega.Spec.Stream.ZookeeperReplicas
-	if zkReplicas == 0 {
-		zkReplicas = 3
-	}
-	zkStorageSize := pega.Spec.Stream.ZookeeperStorageSize
-	if zkStorageSize == "" {
-		zkStorageSize = "10Gi"
 	}
 	replicationFactor := pega.Spec.Stream.ReplicationFactor
 	if replicationFactor == 0 {
@@ -86,26 +75,54 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 		kafkaStorage["class"] = pega.Spec.Stream.StorageClass
 	}
 
-	zkStorage := map[string]interface{}{
-		"type": "persistent-claim",
-		"size": zkStorageSize,
+	// KafkaNodePool for KRaft mode (required since Strimzi 0.46+)
+	nodePool := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "kafka.strimzi.io/v1",
+			"kind":       "KafkaNodePool",
+			"metadata": map[string]interface{}{
+				"name":      kafkaName + "-pool",
+				"namespace": pega.Namespace,
+				"labels": map[string]interface{}{
+					"strimzi.io/cluster": kafkaName,
+				},
+			},
+			"spec": map[string]interface{}{
+				"replicas": int64(replicas),
+				"roles":    []interface{}{"controller", "broker"},
+				"storage":  kafkaStorage,
+			},
+		},
 	}
-	if pega.Spec.Stream.StorageClass != "" {
-		zkStorage["class"] = pega.Spec.Stream.StorageClass
+
+	if err := ctrl.SetControllerReference(pega, nodePool, r.Scheme); err != nil {
+		return false, err
+	}
+	if err := r.createOrUpdateUnstructured(ctx, nodePool); err != nil {
+		return false, fmt.Errorf("KafkaNodePool: %w", err)
+	}
+
+	// Kafka CR in KRaft mode with node pool annotations
+	minISR := int64(1)
+	if replicationFactor > 1 {
+		minISR = 2
 	}
 
 	kafka := &unstructured.Unstructured{
 		Object: map[string]interface{}{
-			"apiVersion": "kafka.strimzi.io/v1beta2",
+			"apiVersion": "kafka.strimzi.io/v1",
 			"kind":       "Kafka",
 			"metadata": map[string]interface{}{
 				"name":      kafkaName,
 				"namespace": pega.Namespace,
+				"annotations": map[string]interface{}{
+					"strimzi.io/kraft":      "enabled",
+					"strimzi.io/node-pools": "enabled",
+				},
 			},
 			"spec": map[string]interface{}{
 				"kafka": map[string]interface{}{
-					"version":  version,
-					"replicas": int64(replicas),
+					"version": version,
 					"listeners": []interface{}{
 						map[string]interface{}{
 							"name": "plain",
@@ -117,13 +134,8 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 					"config": map[string]interface{}{
 						"offsets.topic.replication.factor":         int64(replicationFactor),
 						"transaction.state.log.replication.factor": int64(replicationFactor),
-						"transaction.state.log.min.isr":            int64(2),
+						"transaction.state.log.min.isr":            minISR,
 					},
-					"storage": kafkaStorage,
-				},
-				"zookeeper": map[string]interface{}{
-					"replicas": int64(zkReplicas),
-					"storage":  zkStorage,
 				},
 			},
 		},
@@ -132,33 +144,15 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 	if err := ctrl.SetControllerReference(pega, kafka, r.Scheme); err != nil {
 		return false, err
 	}
-
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "kafka.strimzi.io",
-		Version: "v1beta2",
-		Kind:    "Kafka",
-	})
-	err := r.Get(ctx, types.NamespacedName{Name: kafkaName, Namespace: pega.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		logger.Info("creating Kafka cluster", "name", kafkaName)
-		if err := r.Create(ctx, kafka); err != nil {
-			return false, fmt.Errorf("creating Kafka CR: %w", err)
-		}
-	} else if err != nil {
-		return false, fmt.Errorf("getting Kafka CR: %w", err)
-	} else {
-		kafka.SetResourceVersion(existing.GetResourceVersion())
-		if err := r.Update(ctx, kafka); err != nil {
-			return false, fmt.Errorf("updating Kafka CR: %w", err)
-		}
+	if err := r.createOrUpdateUnstructured(ctx, kafka); err != nil {
+		return false, fmt.Errorf("Kafka CR: %w", err)
 	}
 
-	// Check readiness from Kafka status
+	// Check readiness
 	found := &unstructured.Unstructured{}
 	found.SetGroupVersionKind(schema.GroupVersionKind{
 		Group:   "kafka.strimzi.io",
-		Version: "v1beta2",
+		Version: "v1",
 		Kind:    "Kafka",
 	})
 	if err := r.Get(ctx, types.NamespacedName{Name: kafkaName, Namespace: pega.Namespace}, found); err != nil {
@@ -173,7 +167,7 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 		status = metav1.ConditionTrue
 		reason = "Ready"
 		msg = "Kafka cluster is ready"
-		logger.Info("Kafka cluster ready")
+		logger.V(1).Info("Kafka cluster ready")
 	}
 
 	meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
@@ -183,6 +177,20 @@ func (r *PegaPlatformReconciler) reconcileStreaming(ctx context.Context, pega *p
 		Message: msg,
 	})
 	return ready, nil
+}
+
+func (r *PegaPlatformReconciler) createOrUpdateUnstructured(ctx context.Context, obj *unstructured.Unstructured) error {
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(obj.GroupVersionKind())
+	err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, obj)
+	}
+	if err != nil {
+		return err
+	}
+	obj.SetResourceVersion(existing.GetResourceVersion())
+	return r.Update(ctx, obj)
 }
 
 func isKafkaReady(kafka *unstructured.Unstructured) bool {

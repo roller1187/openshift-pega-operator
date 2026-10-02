@@ -1,0 +1,24 @@
+---
+schema: olm.package
+name: pega-operator
+defaultChannel: alpha
+icon:
+  base64data: ""
+  mediatype: image/png
+description: Deploys and manages Pega Platform on OpenShift with PostgreSQL, OpenSearch, Kafka, and SRS.
+---
+schema: olm.channel
+name: alpha
+package: pega-operator
+entries:
+  - name: pega-operator.v0.1.0
+---
+schema: olm.bundle
+name: pega-operator.v0.1.0
+package: pega-operator
+image: quay.io/aromero/pega-operator-bundle:v0.1.0
+properties:
+  - type: olm.package
+    value:
+      packageName: pega-operator
+      version: 0.1.0

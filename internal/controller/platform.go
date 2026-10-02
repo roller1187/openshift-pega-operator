@@ -24,9 +24,13 @@ import (
 func (r *PegaPlatformReconciler) reconcilePlatform(ctx context.Context, pega *pegav1alpha1.PegaPlatform) (bool, error) {
 	logger := log.FromContext(ctx).WithName("platform")
 
+	if err := r.reconcilePegaConfig(ctx, pega); err != nil {
+		return false, fmt.Errorf("pega config: %w", err)
+	}
+
 	allReady := true
 
-	for _, tier := range pega.Spec.Tiers {
+	for i, tier := range pega.Spec.Tiers {
 		depName := pega.Name + "-" + tier.Name
 		labels := labelsForPega(pega.Name, tier.Name)
 
@@ -39,6 +43,18 @@ func (r *PegaPlatformReconciler) reconcilePlatform(ctx context.Context, pega *pe
 		}
 
 		if tier.Ingress != nil && tier.Ingress.Enabled {
+			if tier.Ingress.Domain == "" {
+				domain, err := r.clusterAppsDomain(ctx)
+				if err != nil {
+					return false, fmt.Errorf("auto-detecting cluster domain: %w", err)
+				}
+				prefix := tier.Ingress.RoutePrefix
+				if prefix == "" {
+					prefix = "pega"
+				}
+				pega.Spec.Tiers[i].Ingress.Domain = prefix + "." + domain
+				tier = pega.Spec.Tiers[i]
+			}
 			if err := r.reconcileTierRoute(ctx, pega, tier, depName, labels); err != nil {
 				return false, fmt.Errorf("tier %s route: %w", tier.Name, err)
 			}
@@ -129,29 +145,38 @@ func (r *PegaPlatformReconciler) reconcileTierDeployment(ctx context.Context, pe
 							Image: pega.Spec.PegaImage,
 							Ports: []corev1.ContainerPort{
 								{Name: "app", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
-								{Name: "management", ContainerPort: 8081, Protocol: corev1.ProtocolTCP},
 							},
 							Env:       env,
+							EnvFrom: []corev1.EnvFromSource{
+								{
+									ConfigMapRef: &corev1.ConfigMapEnvSource{
+										LocalObjectReference: corev1.LocalObjectReference{
+											Name: pega.Name + "-config",
+										},
+									},
+								},
+							},
 							Resources: resources,
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health",
-										Port: intstr.FromInt32(8081),
+										Path: "/prweb/PRRestService/monitor/pingservice/ping",
+										Port: intstr.FromInt32(8080),
 									},
 								},
-								InitialDelaySeconds: 120,
+								InitialDelaySeconds: 300,
 								PeriodSeconds:       20,
 								TimeoutSeconds:      10,
+								FailureThreshold:    5,
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health",
-										Port: intstr.FromInt32(8081),
+										Path: "/prweb/PRRestService/monitor/pingservice/ping",
+										Port: intstr.FromInt32(8080),
 									},
 								},
-								InitialDelaySeconds: 60,
+								InitialDelaySeconds: 120,
 								PeriodSeconds:       10,
 								TimeoutSeconds:      5,
 							},
@@ -224,15 +249,13 @@ func (r *PegaPlatformReconciler) reconcileTierRoute(ctx context.Context, pega *p
 		},
 	}
 
-	if tier.Ingress.TLS != nil && tier.Ingress.TLS.Enabled {
-		termination := tier.Ingress.TLS.Termination
-		if termination == "" {
-			termination = "edge"
-		}
-		spec["tls"] = map[string]interface{}{
-			"termination":                   termination,
-			"insecureEdgeTerminationPolicy": "Redirect",
-		}
+	termination := "edge"
+	if tier.Ingress.TLS != nil && tier.Ingress.TLS.Termination != "" {
+		termination = tier.Ingress.TLS.Termination
+	}
+	spec["tls"] = map[string]interface{}{
+		"termination":                   termination,
+		"insecureEdgeTerminationPolicy": "Redirect",
 	}
 
 	route.Object["spec"] = spec
@@ -305,9 +328,74 @@ func (r *PegaPlatformReconciler) reconcileTierHPA(ctx context.Context, pega *peg
 	return r.createOrUpdate(ctx, hpaObj)
 }
 
+func (r *PegaPlatformReconciler) reconcilePegaConfig(ctx context.Context, pega *pegav1alpha1.PegaPlatform) error {
+	labels := labelsForPega(pega.Name, "config")
+	data := map[string]string{}
+
+	if pega.Spec.Stream.Enabled {
+		var bootstrap string
+		if pega.Spec.Stream.Managed {
+			bootstrap = "pega-kafka-cluster-kafka-bootstrap:9092"
+		} else {
+			bootstrap = pega.Spec.Stream.BootstrapServer
+		}
+		securityProtocol := pega.Spec.Stream.SecurityProtocol
+		if securityProtocol == "" {
+			securityProtocol = "PLAINTEXT"
+		}
+		replicationFactor := pega.Spec.Stream.ReplicationFactor
+		if replicationFactor == 0 {
+			replicationFactor = 1
+		}
+
+		data["STREAM_BOOTSTRAP_SERVERS"] = bootstrap
+		data["EXTERNAL_STREAM"] = "true"
+		data["STREAM_SECURITY_PROTOCOL"] = securityProtocol
+		saslMechanism := pega.Spec.Stream.SASLMechanism
+		if saslMechanism == "" {
+			saslMechanism = "PLAIN"
+		}
+		data["STREAM_SASL_MECHANISM"] = saslMechanism
+		data["STREAM_NAME_PATTERN"] = "pega-{stream.name}"
+		data["STREAM_REPLICATION_FACTOR"] = fmt.Sprintf("%d", replicationFactor)
+	}
+
+	if pega.Spec.SRS.Enabled {
+		srsName := pega.Spec.SRS.DeploymentName
+		if srsName == "" {
+			srsName = "pega-search"
+		}
+		data["PEGA_SEARCH_TYPE"] = "ExternalSearchService"
+		data["SEARCH_AND_REPORTING_SERVICE_URL"] = fmt.Sprintf("http://%s:%d", srsName, srsPort)
+	}
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pega.Name + "-config",
+			Namespace: pega.Namespace,
+			Labels:    labels,
+		},
+		Data: data,
+	}
+
+	if err := ctrl.SetControllerReference(pega, cm, r.Scheme); err != nil {
+		return err
+	}
+	return r.createOrUpdate(ctx, cm)
+}
+
 func (r *PegaPlatformReconciler) buildTierEnv(pega *pegav1alpha1.PegaPlatform, tier pegav1alpha1.TierSpec) []corev1.EnvVar {
 	db := &pega.Spec.Database
 	jdbcURL := r.buildJDBCURL(pega)
+
+	username := db.Username
+	if username == "" {
+		username = "postgres"
+	}
+	password := db.Password
+	if password == "" {
+		password = "postgres"
+	}
 
 	env := []corev1.EnvVar{
 		{Name: "NODE_TYPE", Value: tier.NodeType},
@@ -318,9 +406,17 @@ func (r *PegaPlatformReconciler) buildTierEnv(pega *pegav1alpha1.PegaPlatform, t
 		{Name: "JDBC_DRIVER_URI", Value: db.DriverURI},
 		{Name: "RULES_SCHEMA", Value: db.RulesSchema},
 		{Name: "DATA_SCHEMA", Value: db.DataSchema},
+		{Name: "JDBC_MAX_ACTIVE", Value: "75"},
+		{Name: "JDBC_MIN_IDLE", Value: "3"},
+		{Name: "JDBC_MAX_IDLE", Value: "25"},
+		{Name: "JDBC_MAX_WAIT", Value: "10000"},
+		{Name: "JDBC_INITIAL_SIZE", Value: "0"},
+		{Name: "JDBC_CONNECTION_PROPERTIES", Value: "socketTimeout=90"},
+		{Name: "JDBC_TIMEOUT_PROPERTIES", Value: "socketTimeout=90"},
+		{Name: "JDBC_TIMEOUT_PROPERTIES_RW", Value: "socketTimeout=90"},
+		{Name: "JDBC_TIMEOUT_PROPERTIES_RO", Value: "socketTimeout=90"},
 	}
 
-	// Database credentials
 	if db.CredentialsSecret != "" {
 		env = append(env,
 			corev1.EnvVar{
@@ -343,38 +439,10 @@ func (r *PegaPlatformReconciler) buildTierEnv(pega *pegav1alpha1.PegaPlatform, t
 			},
 		)
 	} else {
-		username := db.Username
-		if username == "" {
-			username = "postgres"
-		}
-		password := db.Password
-		if password == "" {
-			password = "postgres"
-		}
 		env = append(env,
 			corev1.EnvVar{Name: "DB_USERNAME", Value: username},
 			corev1.EnvVar{Name: "DB_PASSWORD", Value: password},
 		)
-	}
-
-	// Search
-	if pega.Spec.SRS.Enabled {
-		srsName := pega.Spec.SRS.DeploymentName
-		if srsName == "" {
-			srsName = "pega-search"
-		}
-		env = append(env, corev1.EnvVar{Name: "PEGA_SEARCH_URL", Value: fmt.Sprintf("http://%s:%d", srsName, srsPort)})
-	}
-
-	// Streaming
-	if pega.Spec.Stream.Enabled {
-		var bootstrap string
-		if pega.Spec.Stream.Managed {
-			bootstrap = "pega-kafka-cluster-kafka-bootstrap:9092"
-		} else {
-			bootstrap = pega.Spec.Stream.BootstrapServer
-		}
-		env = append(env, corev1.EnvVar{Name: "PEGA_STREAM_BOOTSTRAP_SERVERS", Value: bootstrap})
 	}
 
 	return env
@@ -397,12 +465,25 @@ func (r *PegaPlatformReconciler) isTierReady(ctx context.Context, pega *pegav1al
 func (r *PegaPlatformReconciler) setWebURL(pega *pegav1alpha1.PegaPlatform) {
 	for _, tier := range pega.Spec.Tiers {
 		if tier.Ingress != nil && tier.Ingress.Enabled && tier.Ingress.Domain != "" {
-			scheme := "http"
-			if tier.Ingress.TLS != nil && tier.Ingress.TLS.Enabled {
-				scheme = "https"
-			}
-			pega.Status.WebURL = fmt.Sprintf("%s://%s", scheme, tier.Ingress.Domain)
+			pega.Status.WebURL = fmt.Sprintf("https://%s", tier.Ingress.Domain)
 			return
 		}
 	}
+}
+
+func (r *PegaPlatformReconciler) clusterAppsDomain(ctx context.Context) (string, error) {
+	ingress := &unstructured.Unstructured{}
+	ingress.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "config.openshift.io",
+		Version: "v1",
+		Kind:    "Ingress",
+	})
+	if err := r.Get(ctx, types.NamespacedName{Name: "cluster"}, ingress); err != nil {
+		return "", fmt.Errorf("reading cluster ingress config: %w", err)
+	}
+	domain, found, err := unstructured.NestedString(ingress.Object, "spec", "domain")
+	if err != nil || !found || domain == "" {
+		return "", fmt.Errorf("cluster ingress domain not found")
+	}
+	return domain, nil
 }

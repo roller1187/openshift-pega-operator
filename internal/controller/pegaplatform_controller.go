@@ -5,9 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
-	batchv1 "k8s.io/api/batch/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,13 +30,19 @@ import (
 // +kubebuilder:rbac:groups=route.openshift.io,resources=routes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkas,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kafka.strimzi.io,resources=kafkanodepools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
+// +kubebuilder:rbac:groups=config.openshift.io,resources=ingresses,verbs=get;list
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=nonroot-v2,verbs=use
 
 type PegaPlatformReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-const requeueDelay = 15 * time.Second
+const requeueDelay = 30 * time.Second
 
 func (r *PegaPlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -50,12 +53,6 @@ func (r *PegaPlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
-	}
-
-	if pega.Status.Phase == "" {
-		if err := r.setPhase(ctx, pega, pegav1alpha1.PhasePending, "Initializing deployment"); err != nil {
-			return ctrl.Result{}, err
-		}
 	}
 
 	type phaseStep struct {
@@ -75,61 +72,53 @@ func (r *PegaPlatformReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	for _, step := range steps {
-		if err := r.setPhase(ctx, pega, step.phase, step.message); err != nil {
-			return ctrl.Result{}, err
-		}
-
 		ready, err := step.reconcile(ctx, pega)
 		if err != nil {
 			logger.Error(err, "reconciliation failed", "phase", step.phase)
 			meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
-				Type:               step.condition,
-				Status:             metav1.ConditionFalse,
-				Reason:             "ReconcileError",
-				Message:            err.Error(),
-				LastTransitionTime: metav1.Now(),
+				Type:    step.condition,
+				Status:  metav1.ConditionFalse,
+				Reason:  "ReconcileError",
+				Message: err.Error(),
 			})
-			_ = r.setPhase(ctx, pega, pegav1alpha1.PhaseFailed, fmt.Sprintf("Failed during %s: %v", step.phase, err))
+			pega.Status.Phase = pegav1alpha1.PhaseFailed
+			pega.Status.Message = fmt.Sprintf("Failed during %s: %v", step.phase, err)
+			_ = r.Status().Update(ctx, pega)
 			return ctrl.Result{}, err
 		}
 
 		if !ready {
-			logger.Info("waiting for phase to become ready", "phase", step.phase)
+			logger.V(1).Info("waiting for phase to become ready", "phase", step.phase)
 			meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
-				Type:               step.condition,
-				Status:             metav1.ConditionFalse,
-				Reason:             "InProgress",
-				Message:            step.message,
-				LastTransitionTime: metav1.Now(),
+				Type:    step.condition,
+				Status:  metav1.ConditionFalse,
+				Reason:  "InProgress",
+				Message: step.message,
 			})
+			pega.Status.Phase = step.phase
+			pega.Status.Message = step.message
 			_ = r.Status().Update(ctx, pega)
 			return ctrl.Result{RequeueAfter: requeueDelay}, nil
 		}
 
 		meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
-			Type:               step.condition,
-			Status:             metav1.ConditionTrue,
-			Reason:             "Ready",
-			Message:            fmt.Sprintf("%s is ready", step.phase),
-			LastTransitionTime: metav1.Now(),
+			Type:    step.condition,
+			Status:  metav1.ConditionTrue,
+			Reason:  "Ready",
+			Message: fmt.Sprintf("%s is ready", step.phase),
 		})
+	}
+
+	if pega.Status.Phase != pegav1alpha1.PhaseReady {
+		pega.Status.Phase = pegav1alpha1.PhaseReady
+		pega.Status.Message = "Pega platform is fully deployed"
 		if err := r.Status().Update(ctx, pega); err != nil {
 			return ctrl.Result{}, err
 		}
+		logger.Info("reconciliation complete", "webURL", pega.Status.WebURL)
 	}
 
-	if err := r.setPhase(ctx, pega, pegav1alpha1.PhaseReady, "Pega platform is fully deployed"); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	logger.Info("reconciliation complete", "webURL", pega.Status.WebURL)
-	return ctrl.Result{}, nil
-}
-
-func (r *PegaPlatformReconciler) setPhase(ctx context.Context, pega *pegav1alpha1.PegaPlatform, phase pegav1alpha1.PegaPhase, message string) error {
-	pega.Status.Phase = phase
-	pega.Status.Message = message
-	return r.Status().Update(ctx, pega)
+	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
 func labelsForPega(name string, component string) map[string]string {
@@ -141,12 +130,11 @@ func labelsForPega(name string, component string) map[string]string {
 	}
 }
 
+func int64Ptr(i int64) *int64 { return &i }
+func boolPtr(b bool) *bool   { return &b }
+
 func (r *PegaPlatformReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&pegav1alpha1.PegaPlatform{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&appsv1.StatefulSet{}).
-		Owns(&corev1.Service{}).
-		Owns(&batchv1.Job{}).
 		Complete(r)
 }

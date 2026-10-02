@@ -9,53 +9,75 @@ metadata:
           "kind": "PegaPlatform",
           "metadata": {
             "name": "pega",
-            "namespace": "pega"
+            "namespace": "pega-operator"
           },
           "spec": {
-            "pegaImage": "image-registry.openshift-image-registry.svc:5000/pega/pega:23.1.1",
+            "pegaImage": "image-registry.openshift-image-registry.svc:5000/pega-operator/pega:25.1.1",
             "imageRegistry": {
-              "url": "image-registry.openshift-image-registry.svc:5000/pega"
+              "url": "image-registry.openshift-image-registry.svc:5000/pega-operator"
             },
             "database": {
               "managed": true,
               "username": "pega",
-              "password": "pega123",
+              "password": "changeme",
               "storageSize": "100Gi"
             },
             "search": {
               "managed": true,
               "replicas": 3,
-              "storageSize": "30Gi"
+              "storageSize": "50Gi",
+              "javaOpts": "-Xms1g -Xmx1g"
             },
             "stream": {
               "enabled": true,
               "managed": true,
-              "replicas": 3
+              "replicas": 3,
+              "storageSize": "100Gi",
+              "replicationFactor": 3
             },
             "srs": {
               "enabled": true,
-              "image": "image-registry.openshift-image-registry.svc:5000/pega/srs:1.35.0",
+              "image": "image-registry.openshift-image-registry.svc:5000/pega-operator/srs:1.40.0",
               "replicas": 2
             },
             "installer": {
-              "image": "image-registry.openshift-image-registry.svc:5000/pega/installer:23.1.1",
+              "image": "image-registry.openshift-image-registry.svc:5000/pega-operator/installer:25.1.1",
               "adminPassword": "Admin123!"
             },
             "tiers": [
               {
                 "name": "web",
                 "nodeType": "WebUser",
-                "replicas": 1,
+                "replicas": 2,
+                "resources": {
+                  "requests": { "cpu": "3", "memory": "12Gi" },
+                  "limits": { "cpu": "4", "memory": "12Gi" }
+                },
                 "ingress": {
                   "enabled": true,
-                  "domain": "pega.apps.example.com",
-                  "tls": { "enabled": true }
+                  "routePrefix": "pega",
+                  "tls": { "enabled": true, "termination": "edge" }
+                },
+                "hpa": {
+                  "enabled": true,
+                  "minReplicas": 2,
+                  "maxReplicas": 5,
+                  "targetCPUUtilization": 70
                 }
               },
               {
                 "name": "batch",
                 "nodeType": "BackgroundProcessing,Search,Batch,RealTime,Custom1,Custom2,Custom3,Custom4,Custom5,BIX",
-                "replicas": 1
+                "replicas": 2,
+                "resources": {
+                  "requests": { "cpu": "2", "memory": "12Gi" },
+                  "limits": { "cpu": "4", "memory": "12Gi" }
+                },
+                "ingress": {
+                  "enabled": true,
+                  "routePrefix": "pega-batch",
+                  "tls": { "enabled": true, "termination": "edge" }
+                }
               }
             ]
           }
@@ -94,28 +116,224 @@ spec:
             name: ""
             version: route.openshift.io/v1
         specDescriptors:
+          # Pega Container Images — obtained directly from Pega and loaded into your registry
           - path: pegaImage
-            displayName: Pega Image
-            description: Container image for the Pega platform
+            displayName: Pega Web/Batch Tier Image
+            description: "Container image for the Pega web and batch tiers. Obtain from Pega and push to your internal registry (e.g. image-registry.openshift-image-registry.svc:5000/pega/pega:25.1.1)"
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: installer.image
+            displayName: Pega Installer Image
+            description: "Container image for the one-time Pega schema installer job. Obtain from Pega and push to your internal registry (e.g. image-registry.openshift-image-registry.svc:5000/pega/installer:25.1.1)"
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: srs.image
+            displayName: Pega SRS Image
+            description: "Container image for the Search and Reporting Service. Obtain from Pega and push to your internal registry (e.g. image-registry.openshift-image-registry.svc:5000/pega/srs:1.35.0)"
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:srs.enabled:true"
+          - path: imageRegistry.url
+            displayName: Image Registry URL
+            description: Container registry URL where Pega images are stored
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: imageRegistry.pullSecretNames
+            displayName: Image Pull Secrets
+            description: Names of secrets for pulling images from private registries
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          # Database
           - path: database.managed
             displayName: Managed Database
-            description: Deploy a managed PostgreSQL instance
+            description: Deploy a managed PostgreSQL instance (disable for external database)
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: database.url
+            displayName: Database JDBC URL
+            description: JDBC connection URL (required when using external database)
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:database.managed:false"
+          - path: database.username
+            displayName: Database Username
+            description: Database username
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: database.password
+            displayName: Database Password
+            description: Database password
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:password"
+          - path: database.credentialsSecret
+            displayName: Database Credentials Secret
+            description: Secret containing DB_USERNAME and DB_PASSWORD keys (overrides username/password fields)
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:Secret"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          - path: database.storageSize
+            displayName: Database Storage Size
+            description: PVC size for managed PostgreSQL
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:database.managed:true"
+          - path: database.storageClass
+            displayName: Database Storage Class
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:StorageClass"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          - path: database.type
+            displayName: Database Type
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:select:postgres"
+              - "urn:alm:descriptor:com.tectonic.ui:select:mssql"
+              - "urn:alm:descriptor:com.tectonic.ui:select:oracledate"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          - path: database.driverUri
+            displayName: JDBC Driver URI
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          # Search
           - path: search.managed
             displayName: Managed Search
-            description: Deploy a managed OpenSearch cluster
+            description: Deploy a managed OpenSearch cluster (disable for external)
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: search.replicas
+            displayName: Search Replicas
+            description: Number of OpenSearch replicas
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:number"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:search.managed:true"
+          - path: search.storageSize
+            displayName: Search Storage Size
+            description: PVC size per OpenSearch node
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:search.managed:true"
+          - path: search.url
+            displayName: Search URL
+            description: OpenSearch endpoint (required when using external search)
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:search.managed:false"
+          - path: search.storageClass
+            displayName: Search Storage Class
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:StorageClass"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          # Streaming
           - path: stream.enabled
             displayName: Streaming Enabled
-            description: Enable Kafka streaming
+            description: Enable Kafka streaming for Pega
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: stream.managed
+            displayName: Managed Kafka
+            description: Deploy Kafka via Strimzi/AMQ Streams (requires the operator to be installed)
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:stream.enabled:true"
+          - path: stream.replicas
+            displayName: Kafka Replicas
+            description: Number of Kafka broker replicas
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:number"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:stream.managed:true"
+          - path: stream.bootstrapServer
+            displayName: Bootstrap Server
+            description: Kafka bootstrap server address (required for external Kafka)
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:stream.managed:false"
+          - path: stream.storageSize
+            displayName: Kafka Storage Size
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          - path: stream.securityProtocol
+            displayName: Security Protocol
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:select:PLAINTEXT"
+              - "urn:alm:descriptor:com.tectonic.ui:select:SSL"
+              - "urn:alm:descriptor:com.tectonic.ui:select:SASL_PLAINTEXT"
+              - "urn:alm:descriptor:com.tectonic.ui:select:SASL_SSL"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          # SRS
           - path: srs.enabled
             displayName: SRS Enabled
             description: Enable Search and Reporting Service
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: srs.replicas
+            displayName: SRS Replicas
+            description: Number of SRS replicas
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:number"
+              - "urn:alm:descriptor:com.tectonic.ui:fieldDependency:srs.enabled:true"
+          # Installer
+          - path: installer.adminPassword
+            displayName: Admin Password
+            description: Initial password for administrator@pega.com
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:password"
+          - path: installer.adminPasswordSecret
+            displayName: Admin Password Secret
+            description: Secret containing ADMIN_PASSWORD key (overrides adminPassword field)
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes:Secret"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
+          # Tiers
+          - path: tiers
+            displayName: Platform Tiers
+            description: Web and batch tier configurations
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:arrayFieldGroup:tiers"
+          - path: tiers[0].name
+            displayName: Tier Name
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: tiers[0].nodeType
+            displayName: Node Type
+            description: "Pega node type (e.g. WebUser, BackgroundProcessing,Search,Batch)"
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: tiers[0].replicas
+            displayName: Replicas
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:podCount"
+          - path: tiers[0].ingress.enabled
+            displayName: Enable Route
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
+          - path: tiers[0].ingress.routePrefix
+            displayName: Route Prefix
+            description: "Prefix for auto-generated Route hostname (e.g. 'pega' → pega.apps.cluster.example.com). Leave domain empty to auto-detect."
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: tiers[0].ingress.domain
+            displayName: Route Hostname Override
+            description: "Full hostname override (leave empty to auto-generate from routePrefix + cluster domain)"
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
+              - "urn:alm:descriptor:com.tectonic.ui:advanced"
         statusDescriptors:
           - path: phase
             displayName: Phase
             description: Current deployment phase
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:text"
           - path: webURL
             displayName: Web URL
             description: URL to access the Pega web interface
+            x-descriptors:
+              - "urn:alm:descriptor:org.w3:link"
+          - path: conditions
+            displayName: Conditions
+            description: Detailed status conditions for each component
+            x-descriptors:
+              - "urn:alm:descriptor:io.kubernetes.conditions"
   description: |
     ## Pega Platform Operator for OpenShift
 
@@ -177,11 +395,27 @@ spec:
               resources: ["routes", "routes/custom-host"]
               verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
             - apiGroups: ["kafka.strimzi.io"]
-              resources: ["kafkas"]
+              resources: ["kafkas", "kafkanodepools"]
               verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
             - apiGroups: ["apiextensions.k8s.io"]
               resources: ["customresourcedefinitions"]
               verbs: ["get", "list"]
+            - apiGroups: ["config.openshift.io"]
+              resources: ["ingresses"]
+              verbs: ["get", "list"]
+            - apiGroups: ["rbac.authorization.k8s.io"]
+              resources: ["rolebindings"]
+              verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+            - apiGroups: ["security.openshift.io"]
+              resources: ["securitycontextconstraints"]
+              resourceNames: ["nonroot-v2"]
+              verbs: ["use"]
+            - apiGroups: ["coordination.k8s.io"]
+              resources: ["leases"]
+              verbs: ["create", "delete", "get", "list", "update", "patch"]
+            - apiGroups: [""]
+              resources: ["events"]
+              verbs: ["create", "patch"]
           serviceAccountName: pega-operator-controller-manager
       deployments:
         - name: pega-operator-controller-manager
@@ -201,6 +435,7 @@ spec:
                 containers:
                   - name: manager
                     image: quay.io/aromero/pega-operator:v0.1.0
+                    imagePullPolicy: Always
                     command: ["/manager"]
                     args: ["--leader-elect"]
                     ports:
@@ -223,10 +458,10 @@ spec:
                     resources:
                       limits:
                         cpu: 500m
-                        memory: 256Mi
+                        memory: 512Mi
                       requests:
                         cpu: 100m
-                        memory: 128Mi
+                        memory: 256Mi
                     securityContext:
                       allowPrivilegeEscalation: false
                       capabilities:
@@ -248,10 +483,11 @@ spec:
     - crm
     - openshift
   maintainers:
-    - name: Red Hat
-      email: aromero@redhat.com
+    - name: Pegasystems Inc.
+      email: support@pega.com
   maturity: alpha
   provider:
-    name: Red Hat
+    name: Pegasystems Inc.
+  minKubeVersion: "1.27.0"
   version: 0.1.0
   replaces: ""

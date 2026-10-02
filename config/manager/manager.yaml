@@ -23,7 +23,7 @@ spec:
         runAsNonRoot: true
       containers:
         - name: manager
-          image: controller:latest
+          image: quay.io/aromero/pega-operator:v0.1.0
           command:
             - /manager
           args:
@@ -50,10 +50,10 @@ spec:
           resources:
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 512Mi
             requests:
               cpu: 100m
-              memory: 128Mi
+              memory: 256Mi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

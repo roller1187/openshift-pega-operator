@@ -1,4 +1,5 @@
 bin/
+manager
 vendor/
 *.exe
 *.dll

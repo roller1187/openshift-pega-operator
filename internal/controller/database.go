@@ -33,11 +33,11 @@ func (r *PegaPlatformReconciler) reconcileDatabase(ctx context.Context, pega *pe
 		if db.URL == "" {
 			return false, fmt.Errorf("database.url is required when database.managed is false")
 		}
-		logger.Info("using external database", "url", db.URL)
+		logger.V(1).Info("using external database", "url", db.URL)
 		return true, nil
 	}
 
-	logger.Info("reconciling managed PostgreSQL")
+	logger.V(1).Info("reconciling managed PostgreSQL")
 
 	if err := r.reconcileDBSecret(ctx, pega); err != nil {
 		return false, fmt.Errorf("reconciling database secret: %w", err)
@@ -74,6 +74,7 @@ func (r *PegaPlatformReconciler) reconcileDBSecret(ctx context.Context, pega *pe
 	if password == "" {
 		password = "postgres"
 	}
+	adminPassword := password
 
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -86,6 +87,7 @@ func (r *PegaPlatformReconciler) reconcileDBSecret(ctx context.Context, pega *pe
 			"database-name":     "postgres",
 			"database-user":     username,
 			"database-password": password,
+			"admin-password":    adminPassword,
 		},
 	}
 
@@ -98,7 +100,17 @@ func (r *PegaPlatformReconciler) reconcileDBSecret(ctx context.Context, pega *pe
 	if errors.IsNotFound(err) {
 		return r.Create(ctx, secret)
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if _, ok := existing.Data["admin-password"]; !ok {
+		if existing.StringData == nil {
+			existing.StringData = map[string]string{}
+		}
+		existing.StringData["admin-password"] = adminPassword
+		return r.Update(ctx, existing)
+	}
+	return nil
 }
 
 func (r *PegaPlatformReconciler) reconcileDBPVC(ctx context.Context, pega *pegav1alpha1.PegaPlatform) error {
@@ -208,6 +220,15 @@ func (r *PegaPlatformReconciler) reconcileDBDeployment(ctx context.Context, pega
 										},
 									},
 								},
+								{
+									Name: "POSTGRESQL_ADMIN_PASSWORD",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+											Key:                  "admin-password",
+										},
+									},
+								},
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -245,17 +266,7 @@ func (r *PegaPlatformReconciler) reconcileDBDeployment(ctx context.Context, pega
 		return err
 	}
 
-	existing := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: dbDeploymentName, Namespace: pega.Namespace}, existing)
-	if errors.IsNotFound(err) {
-		return r.Create(ctx, dep)
-	}
-	if err != nil {
-		return err
-	}
-
-	existing.Spec.Template.Spec.Containers[0].Image = image
-	return r.Update(ctx, existing)
+	return r.createOrUpdate(ctx, dep)
 }
 
 func (r *PegaPlatformReconciler) reconcileDBService(ctx context.Context, pega *pegav1alpha1.PegaPlatform) error {
@@ -305,6 +316,6 @@ func (r *PegaPlatformReconciler) isDBReady(ctx context.Context, pega *pegav1alph
 		}
 	}
 
-	log.FromContext(ctx).Info("waiting for PostgreSQL deployment to become available")
+	log.FromContext(ctx).V(1).Info("waiting for PostgreSQL deployment to become available")
 	return false, nil
 }

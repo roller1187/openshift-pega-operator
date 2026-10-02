@@ -27,7 +27,7 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 	if err == nil {
 		// Job exists — check its status
 		if existing.Status.Succeeded >= 1 {
-			logger.Info("installer job completed successfully")
+			logger.V(1).Info("installer job completed successfully")
 			pega.Status.InstallerJobName = jobName
 			meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
 				Type:    pegav1alpha1.ConditionInstallerDone,
@@ -50,7 +50,7 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 		}
 
 		// Still running
-		logger.Info("installer job in progress")
+		logger.V(1).Info("installer job in progress")
 		meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
 			Type:    pegav1alpha1.ConditionInstallerDone,
 			Status:  metav1.ConditionFalse,
@@ -135,6 +135,34 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 	labels := labelsForPega(pega.Name, "installer")
 	backoffLimit := int32(0)
 
+	var initContainers []corev1.Container
+	if pega.Spec.Database.Managed {
+		dbUser := pega.Spec.Database.Username
+		if dbUser == "" {
+			dbUser = "postgres"
+		}
+		grantCmd := fmt.Sprintf(
+			`PGPASSWORD="$PGPASSWORD" psql -h %s -U postgres -d postgres -c "GRANT ALL ON DATABASE postgres TO %s;"`,
+			dbServiceName, dbUser,
+		)
+		initContainers = append(initContainers, corev1.Container{
+			Name:    "grant-db-privileges",
+			Image:   "registry.redhat.io/rhel8/postgresql-12:latest",
+			Command: []string{"sh", "-c", grantCmd},
+			Env: []corev1.EnvVar{
+				{
+					Name: "PGPASSWORD",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: dbSecretName},
+							Key:                  "admin-password",
+						},
+					},
+				},
+			},
+		})
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
@@ -146,7 +174,8 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:  corev1.RestartPolicyNever,
+					InitContainers: initContainers,
 					Containers: []corev1.Container{
 						{
 							Name:  "pega-installer",

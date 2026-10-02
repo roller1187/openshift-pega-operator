@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	networkingv1 "k8s.io/api/networking/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	pegav1alpha1 "github.com/redhat-et/pega-operator/api/v1alpha1"
 )
@@ -25,8 +24,6 @@ const (
 )
 
 func (r *PegaPlatformReconciler) reconcileSRS(ctx context.Context, pega *pegav1alpha1.PegaPlatform) (bool, error) {
-	logger := log.FromContext(ctx).WithName("srs")
-
 	if !pega.Spec.SRS.Enabled {
 		meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
 			Type:    pegav1alpha1.ConditionSRSReady,
@@ -37,9 +34,6 @@ func (r *PegaPlatformReconciler) reconcileSRS(ctx context.Context, pega *pegav1a
 		return true, nil
 	}
 
-	logger.Info("reconciling SRS")
-
-	searchURL := r.buildSearchURL(pega)
 	labels := labelsForPega(pega.Name, "srs")
 	replicas := pega.Spec.SRS.Replicas
 	if replicas == 0 {
@@ -67,8 +61,11 @@ func (r *PegaPlatformReconciler) reconcileSRS(ctx context.Context, pega *pegav1a
 								{ContainerPort: srsPort, Protocol: corev1.ProtocolTCP},
 							},
 							Env: []corev1.EnvVar{
-								{Name: "SEARCH_SERVICES_HOST", Value: searchURL},
+								{Name: "ELASTICSEARCH_HOST", Value: r.searchHost(pega)},
+								{Name: "ELASTICSEARCH_PORT", Value: r.searchPort(pega)},
+								{Name: "ELASTICSEARCH_PROTO", Value: r.searchProto(pega)},
 								{Name: "AUTH_ENABLED", Value: strconv.FormatBool(pega.Spec.SRS.AuthEnabled)},
+								{Name: "MICRONAUT_SERVER_HOST", Value: "0.0.0.0"},
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
@@ -82,22 +79,21 @@ func (r *PegaPlatformReconciler) reconcileSRS(ctx context.Context, pega *pegav1a
 							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health",
+									TCPSocket: &corev1.TCPSocketAction{
 										Port: intstr.FromInt32(srsPort),
 									},
 								},
-								PeriodSeconds: 10,
+								InitialDelaySeconds: 15,
+								PeriodSeconds:       10,
 							},
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health",
+									TCPSocket: &corev1.TCPSocketAction{
 										Port: intstr.FromInt32(srsPort),
 									},
 								},
-								InitialDelaySeconds: 30,
-								PeriodSeconds:       10,
+								InitialDelaySeconds: 60,
+								PeriodSeconds:       15,
 							},
 						},
 					},
@@ -182,7 +178,6 @@ func (r *PegaPlatformReconciler) reconcileSRS(ctx context.Context, pega *pegav1a
 
 	for _, cond := range found.Status.Conditions {
 		if cond.Type == appsv1.DeploymentAvailable && cond.Status == corev1.ConditionTrue {
-			logger.Info("SRS is ready")
 			meta.SetStatusCondition(&pega.Status.Conditions, metav1.Condition{
 				Type:    pegav1alpha1.ConditionSRSReady,
 				Status:  metav1.ConditionTrue,
@@ -202,17 +197,25 @@ func (r *PegaPlatformReconciler) reconcileSRS(ctx context.Context, pega *pegav1a
 	return false, nil
 }
 
-func (r *PegaPlatformReconciler) buildSearchURL(pega *pegav1alpha1.PegaPlatform) string {
+func (r *PegaPlatformReconciler) searchHost(pega *pegav1alpha1.PegaPlatform) string {
 	if pega.Spec.Search.Managed {
-		return "http://pega-opensearch-client:9200"
+		return "pega-opensearch-client"
 	}
-	protocol := pega.Spec.Search.Protocol
-	if protocol == "" {
-		protocol = "http"
-	}
+	return pega.Spec.Search.URL
+}
+
+func (r *PegaPlatformReconciler) searchPort(pega *pegav1alpha1.PegaPlatform) string {
 	port := pega.Spec.Search.Port
 	if port == 0 {
 		port = 9200
 	}
-	return fmt.Sprintf("%s://%s:%d", protocol, pega.Spec.Search.URL, port)
+	return strconv.Itoa(int(port))
 }
+
+func (r *PegaPlatformReconciler) searchProto(pega *pegav1alpha1.PegaPlatform) string {
+	if pega.Spec.Search.Protocol != "" {
+		return pega.Spec.Search.Protocol
+	}
+	return "http"
+}
+

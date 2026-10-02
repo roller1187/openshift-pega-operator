@@ -195,20 +195,17 @@ type StreamSpec struct {
 	StorageClass string `json:"storageClass,omitempty"`
 
 	// Kafka version
-	// +kubebuilder:default="3.7.0"
+	// +kubebuilder:default="4.1.0"
 	Version string `json:"version,omitempty"`
+
+	// SASL mechanism: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512 (only used with SASL_PLAINTEXT or SASL_SSL)
+	// +kubebuilder:default="PLAIN"
+	SASLMechanism string `json:"saslMechanism,omitempty"`
 
 	// Topic replication factor
 	// +kubebuilder:default=3
 	ReplicationFactor int32 `json:"replicationFactor,omitempty"`
 
-	// ZooKeeper replicas (managed mode)
-	// +kubebuilder:default=3
-	ZookeeperReplicas int32 `json:"zookeeperReplicas,omitempty"`
-
-	// ZooKeeper PVC size
-	// +kubebuilder:default="10Gi"
-	ZookeeperStorageSize string `json:"zookeeperStorageSize,omitempty"`
 }
 
 // SRSSpec configures the Pega Search and Reporting Service.
@@ -306,9 +303,13 @@ type TierIngressSpec struct {
 	// +kubebuilder:default=true
 	Enabled bool `json:"enabled"`
 
-	// Hostname for the Route
-	// +kubebuilder:validation:Required
-	Domain string `json:"domain"`
+	// Hostname for the Route (leave empty to auto-detect from cluster domain using routePrefix)
+	// +optional
+	Domain string `json:"domain,omitempty"`
+
+	// Prefix prepended to the cluster apps domain when auto-generating the Route hostname
+	// +kubebuilder:default="pega"
+	RoutePrefix string `json:"routePrefix,omitempty"`
 
 	// TLS configuration
 	// +optional
