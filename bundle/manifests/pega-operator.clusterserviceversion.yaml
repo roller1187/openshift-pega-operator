@@ -9,12 +9,12 @@ metadata:
           "kind": "PegaPlatform",
           "metadata": {
             "name": "pega",
-            "namespace": "pega-operator"
+            "namespace": "pega"
           },
           "spec": {
-            "pegaImage": "image-registry.openshift-image-registry.svc:5000/pega-operator/pega:25.1.1",
+            "pegaImage": "image-registry.openshift-image-registry.svc:5000/pega/pega:25.1.1",
             "imageRegistry": {
-              "url": "image-registry.openshift-image-registry.svc:5000/pega-operator"
+              "url": "image-registry.openshift-image-registry.svc:5000/pega"
             },
             "database": {
               "managed": true,
@@ -37,11 +37,11 @@ metadata:
             },
             "srs": {
               "enabled": true,
-              "image": "image-registry.openshift-image-registry.svc:5000/pega-operator/srs:1.40.0",
+              "image": "image-registry.openshift-image-registry.svc:5000/pega/srs:1.40.0",
               "replicas": 2
             },
             "installer": {
-              "image": "image-registry.openshift-image-registry.svc:5000/pega-operator/installer:25.1.1",
+              "image": "image-registry.openshift-image-registry.svc:5000/pega/installer:25.1.1",
               "adminPassword": "Admin123!"
             },
             "tiers": [
@@ -85,6 +85,7 @@ metadata:
       ]
     capabilities: Full Lifecycle
     categories: Application Runtime
+    operatorframework.io/suggested-namespace: pega-operator
     containerImage: quay.io/aromero/pega-operator:v0.1.0
     description: Deploys and manages Pega Platform on OpenShift with PostgreSQL, OpenSearch, Kafka, and SRS.
     repository: https://github.com/roller1187/openshift-pega-operator

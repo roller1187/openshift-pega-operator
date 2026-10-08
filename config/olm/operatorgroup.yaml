@@ -3,6 +3,9 @@ kind: OperatorGroup
 metadata:
   name: pega-operator-group
   namespace: pega-operator
-spec:
-  targetNamespaces:
-    - pega-operator
+# Empty spec = AllNamespaces scope. The controller-runtime manager in main.go
+# sets no cache restriction, so it watches every namespace; the CSV grants
+# cluster-scoped RBAC. Declaring AllNamespaces keeps the manifest honest and
+# lets a PegaPlatform CR live in any namespace (e.g. pega) while the operator
+# itself runs in pega-operator.
+spec: {}

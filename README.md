@@ -38,6 +38,23 @@ oc get pegaplatform pega -o jsonpath='{.status.phase}'
 
 ---
 
+## Namespace Layout
+
+The operator and the workloads it manages live in **separate namespaces**:
+
+| Namespace | Contains |
+|-----------|----------|
+| `pega-operator` | The operator controller pod, its CSV, Subscription, and OperatorGroup |
+| `pega` | The `PegaPlatform` CR and everything it creates — PostgreSQL, OpenSearch, Kafka, SRS, the installer Job, application tiers, Routes, and the Pega container images |
+
+The CSV carries an `operatorframework.io/suggested-namespace: pega-operator` annotation, so the install form defaults to that namespace — but you can install anywhere you like; it is a default, not a constraint.
+
+The operator's `OperatorGroup` uses `spec: {}` (AllNamespaces scope). This is deliberate: the controller-runtime manager in `main.go` sets no cache restriction, so it watches every namespace, and the CSV grants cluster-scoped RBAC. Declaring AllNamespaces keeps the manifest consistent with actual behavior and lets you put the `PegaPlatform` CR in any namespace you want — `pega` is just the convention used throughout this guide.
+
+> If you prefer a single namespace for everything, put both the operator and the CR in the same place and replace `pega` with your namespace in the image paths below. Nothing in the operator requires the split.
+
+---
+
 ## Installation
 
 ### Step 1: Load Pega Images into the OpenShift Internal Registry
@@ -63,27 +80,38 @@ REGISTRY=$(oc get route default-route -n openshift-image-registry -o jsonpath='{
 podman login $REGISTRY -u $(oc whoami) -p $(oc whoami -t)
 ```
 
-**Create the target namespace and push images:**
+**Create the namespaces and push images:**
+
+This deployment uses two namespaces — see [Namespace Layout](#namespace-layout) above. Images go in `pega`, alongside the workloads that consume them.
 
 ```bash
-oc new-project pega-operator
+oc new-project pega-operator   # operator runs here
+oc new-project pega            # Pega workloads and images live here
 
 # Tag and push each image (adjust versions to match your Pega release)
-podman tag pega:25.1.1 $REGISTRY/pega-operator/pega:25.1.1
-podman push $REGISTRY/pega-operator/pega:25.1.1
+podman tag pega:25.1.1 $REGISTRY/pega/pega:25.1.1
+podman push $REGISTRY/pega/pega:25.1.1
 
-podman tag pega-installer:25.1.1 $REGISTRY/pega-operator/installer:25.1.1
-podman push $REGISTRY/pega-operator/installer:25.1.1
+podman tag pega-installer:25.1.1 $REGISTRY/pega/installer:25.1.1
+podman push $REGISTRY/pega/installer:25.1.1
 
-podman tag pega-srs:1.40.0 $REGISTRY/pega-operator/srs:1.40.0
-podman push $REGISTRY/pega-operator/srs:1.40.0
+podman tag pega-srs:1.40.0 $REGISTRY/pega/srs:1.40.0
+podman push $REGISTRY/pega/srs:1.40.0
 ```
 
 **Verify the image streams were created:**
 
 ```bash
-oc get imagestream -n pega-operator
+oc get imagestream -n pega
 ```
+
+> **If your images are already in a different namespace**, you don't need to re-upload them. Copy the tags server-side — this is instant, even for the multi-gigabyte installer:
+>
+> ```bash
+> oc tag <source-ns>/installer:25.1.1 pega/installer:25.1.1 --reference-policy=local
+> ```
+>
+> The `--reference-policy=local` flag matters. Without it the tag defaults to `Source`, which resolves back to the original namespace's registry path and requires the `pega` service account to hold `system:image-puller` on that namespace — otherwise pods fail with `ImagePullBackOff`.
 
 ### Step 2: Install the Operator via OLM
 
@@ -100,6 +128,14 @@ oc get catalogsource pega-operator-catalog -n openshift-marketplace \
   -o jsonpath='{.status.connectionState.lastObservedState}'
 # Expected output: READY
 ```
+
+**Confirm the PackageManifest was created:**
+
+```bash
+oc get packagemanifest pega-operator -n openshift-marketplace
+```
+
+A `READY` catalog is **not** sufficient on its own. OLM only builds a PackageManifest if the catalog's bundle entry carries full CSV metadata, and the operator will not appear in the console without one. If the catalog is `READY` but this returns `NotFound`, see [Common Pitfalls](#common-pitfalls).
 
 **Apply the OperatorGroup and Subscription:**
 
@@ -125,17 +161,18 @@ oc get pods -n pega-operator -l control-plane=controller-manager
 
 The easiest way to deploy is through the OpenShift web console with a guided form:
 
-1. Navigate to **Operators > Installed Operators** and select **Pega Platform Operator**
-2. Click the **Pega Platform** tab, then **Create PegaPlatform**
-3. The form is pre-populated with sensible defaults. Fill in the required fields:
-   - **Pega Web/Batch Tier Image** — your internal registry path (e.g. `image-registry.openshift-image-registry.svc:5000/pega-operator/pega:25.1.1`)
+1. Switch the **Project** selector at the top of the page to **`pega`**. This is the namespace the CR and all workloads will be created in — not `pega-operator`, where the operator itself runs.
+2. Navigate to **Ecosystem > Installed Operators** and select **Pega Platform Operator**
+3. Click the **Pega Platform** tab, then **Create PegaPlatform**
+4. The form is pre-populated with sensible defaults. Fill in the required fields:
+   - **Pega Web/Batch Tier Image** — your internal registry path (e.g. `image-registry.openshift-image-registry.svc:5000/pega/pega:25.1.1`)
    - **Pega Installer Image** — your internal registry path for the installer
    - **Pega SRS Image** — your internal registry path for SRS
-   - **Image Registry URL** — the base registry path (e.g. `image-registry.openshift-image-registry.svc:5000/pega-operator`)
+   - **Image Registry URL** — the base registry path (e.g. `image-registry.openshift-image-registry.svc:5000/pega`)
    - **Database Username / Password** — credentials for the managed PostgreSQL
    - **Admin Password** — initial password for `administrator@pega.com`
-4. Configure the **Platform Tiers** section. The default example includes a `web` tier and a `batch` tier. Make sure each tier with ingress enabled has a **unique Route Prefix** (e.g. `pega` for web, `pega-batch` for batch)
-5. Click **Create**
+5. Configure the **Platform Tiers** section. The default example includes a `web` tier and a `batch` tier. Make sure each tier with ingress enabled has a **unique Route Prefix** (e.g. `pega` for web, `pega-batch` for batch) — two tiers sharing a prefix generate the same hostname and one Route will be rejected
+6. Click **Create**
 
 Monitor the deployment from the console under **Workloads > Pods**, or from the CLI:
 
@@ -154,11 +191,11 @@ apiVersion: pega.openshift.io/v1alpha1
 kind: PegaPlatform
 metadata:
   name: pega
-  namespace: pega-operator
+  namespace: pega
 spec:
-  pegaImage: image-registry.openshift-image-registry.svc:5000/pega-operator/pega:25.1.1
+  pegaImage: image-registry.openshift-image-registry.svc:5000/pega/pega:25.1.1
   imageRegistry:
-    url: image-registry.openshift-image-registry.svc:5000/pega-operator
+    url: image-registry.openshift-image-registry.svc:5000/pega
   database:
     managed: true
     username: pega
@@ -177,10 +214,10 @@ spec:
     replicationFactor: 3
   srs:
     enabled: true
-    image: image-registry.openshift-image-registry.svc:5000/pega-operator/srs:1.40.0
+    image: image-registry.openshift-image-registry.svc:5000/pega/srs:1.40.0
     replicas: 2
   installer:
-    image: image-registry.openshift-image-registry.svc:5000/pega-operator/installer:25.1.1
+    image: image-registry.openshift-image-registry.svc:5000/pega/installer:25.1.1
     adminPassword: Admin123!
   tiers:
     - name: web
@@ -223,7 +260,7 @@ oc apply -f pega-cr.yaml
 oc get pegaplatform pega -w
 
 # Watch all pods come up
-oc get pods -n pega-operator -w
+oc get pods -n pega -w
 ```
 
 See the [API Reference](#api-reference) below for all configurable fields.
@@ -233,7 +270,7 @@ See the [API Reference](#api-reference) below for all configurable fields.
 Once the phase reaches `Ready`, the operator creates OpenShift Routes for each tier with ingress enabled:
 
 ```bash
-oc get routes -n pega-operator
+oc get routes -n pega
 ```
 
 The web tier is accessible at `https://<routePrefix>.apps.<cluster-domain>`. Log in with `administrator@pega.com` and the admin password you configured.
@@ -261,7 +298,7 @@ The web tier is accessible at `https://<routePrefix>.apps.<cluster-domain>`. Log
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | `string` | — | **Required.** Registry URL (e.g. `image-registry.openshift-image-registry.svc:5000/pega-operator`) |
+| `url` | `string` | — | **Required.** Registry URL (e.g. `image-registry.openshift-image-registry.svc:5000/pega`) |
 | `pullSecretNames` | `[]string` | `[]` | Names of image pull secrets for private registries |
 
 ---
@@ -429,10 +466,10 @@ Remove the deployment in reverse order:
 
 ```bash
 # Delete the PegaPlatform CR (removes all managed workloads)
-oc delete pegaplatform pega -n pega-operator
+oc delete pegaplatform pega -n pega
 
 # Delete PVCs if you want to remove persistent data
-oc delete pvc --all -n pega-operator
+oc delete pvc --all -n pega
 
 # Remove the operator
 oc delete subscription.operators.coreos.com pega-operator -n pega-operator
@@ -493,7 +530,7 @@ Every change to the operator follows the same cycle: **edit → build → push �
 |-------|---------|-----------------|
 | **Operator** (`pega-operator`) | The controller binary | Any Go code change |
 | **Bundle** (`pega-operator-bundle`) | OLM metadata (CSV, CRD) | CRD field changes, RBAC changes, CSV edits |
-| **Catalog** (`pega-operator-catalog`) | OLM package index | Only if `catalog/pega-operator/catalog.yaml` changes (rare) |
+| **Catalog** (`pega-operator-catalog`) | OLM package index | **Any time the bundle changes.** `catalog.yaml` embeds a base64 copy of the CSV, so a CSV edit is not live until the catalog is regenerated and rebuilt |
 
 When in doubt, rebuild all three. It takes under two minutes.
 
@@ -523,6 +560,8 @@ Most changes fall into one of these categories:
 
 Always use `--no-cache` to avoid stale layers. The operator image must be cross-compiled for `linux/amd64` if you are building on macOS (ARM).
 
+**Order matters.** The catalog embeds a base64 copy of the CSV, so the bundle must be pushed *before* the catalog is regenerated from it. Building the catalog from a stale `catalog.yaml` silently ships the previous CSV.
+
 ```bash
 # 1. Operator image
 podman build --no-cache --platform linux/amd64 \
@@ -534,7 +573,32 @@ podman build --no-cache \
   -t quay.io/<your-repo>/pega-operator-bundle:v0.1.0 -f bundle.Dockerfile .
 podman push quay.io/<your-repo>/pega-operator-bundle:v0.1.0
 
-# 3. Catalog image (file-based catalog — do NOT use `opm index add`)
+# 3. Regenerate catalog.yaml from the bundle you just pushed.
+#    Never hand-edit the olm.bundle stanza — OLM needs the full CSV
+#    metadata (olm.gvk, olm.bundle.object, relatedImages) to build a
+#    PackageManifest, and without one the operator never appears in the UI.
+cat > catalog/pega-operator/catalog.yaml <<'YAML'
+---
+schema: olm.package
+name: pega-operator
+defaultChannel: alpha
+icon:
+  base64data: ""
+  mediatype: image/png
+description: Deploys and manages Pega Platform on OpenShift with PostgreSQL, OpenSearch, Kafka, and SRS.
+---
+schema: olm.channel
+name: alpha
+package: pega-operator
+entries:
+  - name: pega-operator.v0.1.0
+YAML
+podman run --rm --platform linux/amd64 --entrypoint /bin/opm \
+  registry.redhat.io/openshift4/ose-operator-registry-rhel9:v4.17 \
+  render quay.io/<your-repo>/pega-operator-bundle:v0.1.0 -o yaml \
+  >> catalog/pega-operator/catalog.yaml
+
+# 4. Catalog image (file-based catalog — do NOT use `opm index add`)
 podman build --no-cache \
   -t quay.io/<your-repo>/pega-operator-catalog:v0.1.0 -f catalog.Dockerfile .
 podman push quay.io/<your-repo>/pega-operator-catalog:v0.1.0
@@ -548,12 +612,12 @@ For a clean redeploy (recommended when testing significant changes):
 
 ```bash
 # Remove the existing deployment
-oc delete pegaplatform pega -n pega-operator --ignore-not-found
+oc delete pegaplatform pega -n pega --ignore-not-found
 oc delete subscription.operators.coreos.com pega-operator -n pega-operator --ignore-not-found
 oc delete csv pega-operator.v0.1.0 -n pega-operator --ignore-not-found
 oc delete installplan --all -n pega-operator --ignore-not-found
 oc delete catalogsource pega-operator-catalog -n openshift-marketplace --ignore-not-found
-oc delete pvc --all -n pega-operator  # Only if you want to reset persistent data
+oc delete pvc --all -n pega  # Only if you want to reset persistent data
 
 # Reinstall
 oc apply -f config/olm/catalogsource.yaml
@@ -596,6 +660,9 @@ oc delete pod -n pega-operator -l control-plane=controller-manager
 | Stale operator code running after push | OLM cached the old CSV/installplan | Delete subscription + CSV + installplan, then reinstall |
 | OpenSearch pods stuck at 0/1 Ready | Missing `publishNotReadyAddresses` or sequential pod management | Ensure headless Service has `publishNotReadyAddresses: true` and StatefulSet uses `Parallel` pod management |
 | Route hostname conflict (Rejected) | Two tiers using the same `routePrefix` | Use unique `routePrefix` per tier (e.g. `pega`, `pega-batch`) |
+| CatalogSource `READY` but no PackageManifest, operator absent from the console | `catalog.yaml` hand-written with only an `olm.package` property. OLM cannot build a PackageManifest without the CSV metadata and will not pull the bundle image to find it | Regenerate `catalog.yaml` with `opm render` (see below), rebuild and push the catalog, then delete and re-apply the CatalogSource |
+| Console shows stale CR defaults after a CSV edit | Catalog still serving the previously embedded CSV | Rebuild the **bundle first**, then re-render `catalog.yaml` from the new bundle, then rebuild the catalog — in that order |
+| `ImagePullBackOff` after copying images between namespaces with `oc tag` | Tag defaults to `referencePolicy: Source`, which resolves back to the source namespace and requires `system:image-puller` there | Re-tag with `--reference-policy=local` so the registry serves the image through the destination namespace |
 
 ## License
 
