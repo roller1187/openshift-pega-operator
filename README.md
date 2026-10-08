@@ -55,6 +55,38 @@ The operator's `OperatorGroup` uses `spec: {}` (AllNamespaces scope). This is de
 
 ---
 
+## FIPS 140-3 and GovCloud
+
+> **If you are deploying to AWS GovCloud, ROSA GovCloud, or any FIPS-enabled cluster, set `fips140_3Mode: true` on the CR before you create it.**
+>
+> ```yaml
+> spec:
+>   fips140_3Mode: true
+> ```
+>
+> **This cannot be changed after installation.** It alters cryptographic behavior including password hashing, so it is applied to the installer and every tier together. Enabling it later would leave runtime crypto out of step with the installed schema and break authentication. Changing your mind means a fresh namespace and a fresh schema.
+
+### Why it is needed
+
+GovCloud clusters run with `fips: true`, which puts **the operating system** in FIPS mode. That does not put **Pega** in FIPS mode. Without this flag Pega loads its default cryptographic providers and runs non-approved crypto on a FIPS host — it will deploy and function, but it is not FIPS compliant, which is usually the reason the cluster is on GovCloud in the first place.
+
+Setting the flag sets `FIPS_140_3_MODE=true`, which causes Pega to:
+
+- prepend its Bouncy Castle FIPS jars (`bc-fips`, `bctls-fips`, `bcutil-fips`) to the classpath
+- run with `-Dorg.bouncycastle.fips.approved_only=true`
+- additionally set `-DHighSecureCryptoModeEnabled=true` on the installer
+
+### What is handled automatically
+
+You do **not** need to do anything about the JDBC driver on FIPS clusters. The Pega images cannot complete a TLS handshake under FIPS — `curl` fails with `(35) Insufficient randomness` — so the operator always downloads the driver in a separate init container and passes it to Pega as a local file. See [JDBC driver handling](#jdbc-driver-handling). This applies on FIPS and non-FIPS clusters alike.
+
+### Known limitations
+
+- Only the Pega installer and tiers are placed in FIPS mode. **OpenSearch and Kafka are not FIPS-validated by this operator** — assess them separately if you need end-to-end compliance.
+- An **external PostgreSQL 14 or newer** defaults to `scram-sha-256` authentication, and the PostgreSQL JDBC driver is [documented as failing under FIPS](https://access.redhat.com/solutions/6957637) with `unsupported key for HMAC algorithm`. The bundled managed PostgreSQL 12 is not affected. Validate external databases before relying on them.
+
+---
+
 ## Installation
 
 ### Step 1: Load Pega Images into the OpenShift Internal Registry
@@ -171,6 +203,7 @@ The easiest way to deploy is through the OpenShift web console with a guided for
    - **Image Registry URL** — the base registry path (e.g. `image-registry.openshift-image-registry.svc:5000/pega`)
    - **Database Username / Password** — credentials for the managed PostgreSQL
    - **Admin Password** — initial password for `administrator@pega.com`
+   - **FIPS 140-3 Mode** — turn this **on** for GovCloud or any FIPS-enabled cluster. It cannot be changed after installation; see [FIPS 140-3 and GovCloud](#fips-140-3-and-govcloud)
 5. Configure the **Platform Tiers** section. The default example includes a `web` tier and a `batch` tier. Make sure each tier with ingress enabled has a **unique Route Prefix** (e.g. `pega` for web, `pega-batch` for batch) — two tiers sharing a prefix generate the same hostname and one Route will be rejected
 6. Click **Create**
 
@@ -193,6 +226,9 @@ metadata:
   name: pega
   namespace: pega
 spec:
+  # REQUIRED on GovCloud / FIPS-enabled clusters. Cannot be changed after the
+  # schema is installed. See "FIPS 140-3 and GovCloud" above.
+  fips140_3Mode: false
   pegaImage: image-registry.openshift-image-registry.svc:5000/pega/pega:25.1.1
   imageRegistry:
     url: image-registry.openshift-image-registry.svc:5000/pega
@@ -291,6 +327,7 @@ The web tier is accessible at `https://<routePrefix>.apps.<cluster-domain>`. Log
 | `srs` | [`SRSSpec`](#srsspec) | Yes | Search and Reporting Service configuration |
 | `installer` | [`InstallerSpec`](#installerspec) | Yes | Pega installer job configuration |
 | `tiers` | [`[]TierSpec`](#tierspec) | Yes | Platform tier definitions |
+| `fips140_3Mode` | `bool` | No (default `false`) | Run Pega with its FIPS 140-3 crypto provider. **Required for compliance on FIPS-enabled clusters such as GovCloud.** Must be set before the schema is installed — see [FIPS 140-3 and GovCloud](#fips-140-3-and-govcloud) |
 
 ---
 
@@ -385,7 +422,7 @@ Requires the **AMQ Streams** (Strimzi) operator to be installed when `managed: t
 
 ### JDBC driver handling
 
-The operator never lets the Pega installer download the JDBC driver itself. Instead it adds an init container to the installer Job that fetches `database.driverUri` into a shared volume, then hands the installer a local `file://` path.
+The operator never lets a Pega container download the JDBC driver itself. It adds a `download-jdbc-driver` init container to **both the installer Job and every tier Deployment**, which fetches `database.driverUri` into a shared volume and hands the Pega container a local `file://` path. Tiers need this as much as the installer — they run the same image and would otherwise perform the same download on startup.
 
 This is automatic — `database.driverUri` already defaults to the PostgreSQL driver, so no configuration is required.
 
@@ -676,7 +713,8 @@ oc delete pod -n pega-operator -l control-plane=controller-manager
 | CatalogSource `READY` but no PackageManifest, operator absent from the console | `catalog.yaml` hand-written with only an `olm.package` property. OLM cannot build a PackageManifest without the CSV metadata and will not pull the bundle image to find it | Regenerate `catalog.yaml` with `opm render` (see below), rebuild and push the catalog, then delete and re-apply the CatalogSource |
 | Console shows stale CR defaults after a CSV edit | Catalog still serving the previously embedded CSV | Rebuild the **bundle first**, then re-render `catalog.yaml` from the new bundle, then rebuild the catalog — in that order |
 | `ImagePullBackOff` after copying images between namespaces with `oc tag` | Tag defaults to `referencePolicy: Source`, which resolves back to the source namespace and requires `system:image-puller` there | Re-tag with `--reference-policy=local` so the registry serves the image through the destination namespace |
-| Installer fails with `curl: (35) Insufficient randomness` / `Could not download jar` | FIPS-enabled cluster. The Pega installer image's curl cannot complete a TLS handshake; the cluster's network is fine | Already handled — the operator downloads the driver in a UBI init container and passes a local `file://` path. If you see this, the operator predates that fix. See [JDBC driver handling](#jdbc-driver-handling) |
+| Installer **or a web/batch tier** fails with `curl: (35) Insufficient randomness` / `Could not download jar` | FIPS-enabled cluster. The Pega image's curl cannot complete a TLS handshake; the cluster's network is fine | Already handled — the operator stages the driver via a UBI init container on both the installer Job and every tier. If you see this, the operator predates that fix. See [JDBC driver handling](#jdbc-driver-handling) |
+| Pega deployed successfully on GovCloud but fails a compliance review | `fips140_3Mode` left at `false`, so the OS is in FIPS mode but Pega is not | Redeploy with `fips140_3Mode: true`. It cannot be switched on in place — it changes password hashing and requires a fresh schema. See [FIPS 140-3 and GovCloud](#fips-140-3-and-govcloud) |
 | Installer Job stays `Failed` and is never retried | `reconcileInstaller` returns an error on a failed Job rather than recreating it, to avoid masking a real installation failure | Delete the Job (`oc delete job <name>-installer -n <ns>`); the operator builds a fresh one on the next reconcile |
 
 ## License
