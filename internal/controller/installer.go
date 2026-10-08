@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -16,6 +18,42 @@ import (
 
 	pegav1alpha1 "github.com/redhat-et/pega-operator/api/v1alpha1"
 )
+
+const (
+	jdbcDriverVolumeName       = "jdbc-driver"
+	jdbcDriverMountPath        = "/pega-jdbc"
+	defaultDriverDownloadImage = "registry.access.redhat.com/ubi9/ubi-minimal:latest"
+)
+
+// Fetches every declared driver into DEST_DIR. `set -e` aborts the init
+// container on the first failure so the installer never starts with a missing
+// driver. Query strings are stripped from the filename the same way Pega's own
+// common_functions.sh does.
+const jdbcDriverDownloadScript = `set -eu
+mkdir -p "$DEST_DIR"
+for url in $(echo "$DRIVER_URIS" | tr ',' ' '); do
+  fname=$(basename "$(echo "$url" | cut -d'?' -f1)")
+  echo "Downloading ${url}"
+  curl -fsSL --retry 3 --retry-delay 2 -o "${DEST_DIR}/${fname}" "${url}"
+done
+ls -l "$DEST_DIR"
+`
+
+// localJDBCDriverURIs maps the user-supplied driver URIs onto the local file://
+// paths the init container writes them to. Returns "" for empty input, which
+// makes Pega's installer skip driver handling entirely.
+func localJDBCDriverURIs(driverURI string) string {
+	var locals []string
+	for _, raw := range strings.Split(driverURI, ",") {
+		u := strings.TrimSpace(raw)
+		if u == "" {
+			continue
+		}
+		name := path.Base(strings.SplitN(u, "?", 2)[0])
+		locals = append(locals, "file://"+jdbcDriverMountPath+"/"+name)
+	}
+	return strings.Join(locals, ",")
+}
 
 func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *pegav1alpha1.PegaPlatform) (bool, error) {
 	logger := log.FromContext(ctx).WithName("installer")
@@ -70,12 +108,18 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 	jdbcURL := r.buildJDBCURL(pega)
 	db := &pega.Spec.Database
 
+	// The driver is fetched by an init container and handed to the installer as
+	// a local file, so the installer never performs the remote download itself.
+	// An empty DriverURI leaves JDBC_DRIVER_URI empty, which makes Pega's script
+	// skip the download — the supported path for drivers baked into an image.
+	localDriverURIs := localJDBCDriverURIs(db.DriverURI)
+
 	env := []corev1.EnvVar{
 		{Name: "ACTION", Value: "install"},
 		{Name: "JDBC_URL", Value: jdbcURL},
 		{Name: "JDBC_CLASS", Value: db.DriverClass},
 		{Name: "DB_TYPE", Value: db.Type},
-		{Name: "JDBC_DRIVER_URI", Value: db.DriverURI},
+		{Name: "JDBC_DRIVER_URI", Value: localDriverURIs},
 		{Name: "RULES_SCHEMA", Value: db.RulesSchema},
 		{Name: "DATA_SCHEMA", Value: db.DataSchema},
 	}
@@ -136,6 +180,44 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 	backoffLimit := int32(0)
 
 	var initContainers []corev1.Container
+	var volumes []corev1.Volume
+	var driverMounts []corev1.VolumeMount
+
+	if localDriverURIs != "" {
+		downloadImage := inst.DriverDownloadImage
+		if downloadImage == "" {
+			downloadImage = defaultDriverDownloadImage
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name:         jdbcDriverVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		})
+		driverMounts = append(driverMounts, corev1.VolumeMount{
+			Name:      jdbcDriverVolumeName,
+			MountPath: jdbcDriverMountPath,
+		})
+		initContainers = append(initContainers, corev1.Container{
+			Name:    "download-jdbc-driver",
+			Image:   downloadImage,
+			Command: []string{"/bin/sh", "-c", jdbcDriverDownloadScript},
+			Env: []corev1.EnvVar{
+				{Name: "DRIVER_URIS", Value: db.DriverURI},
+				{Name: "DEST_DIR", Value: jdbcDriverMountPath},
+			},
+			VolumeMounts: driverMounts,
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+				},
+			},
+		})
+	}
+
 	if pega.Spec.Database.Managed {
 		dbUser := pega.Spec.Database.Username
 		if dbUser == "" {
@@ -176,11 +258,13 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 				Spec: corev1.PodSpec{
 					RestartPolicy:  corev1.RestartPolicyNever,
 					InitContainers: initContainers,
+					Volumes:        volumes,
 					Containers: []corev1.Container{
 						{
-							Name:  "pega-installer",
-							Image: inst.Image,
-							Env:   env,
+							Name:         "pega-installer",
+							Image:        inst.Image,
+							Env:          env,
+							VolumeMounts: driverMounts,
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
 									corev1.ResourceMemory: resource.MustParse("4Gi"),

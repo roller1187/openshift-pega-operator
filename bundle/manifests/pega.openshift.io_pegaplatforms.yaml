@@ -128,6 +128,15 @@ spec:
                   adminPasswordSecret:
                     description: Secret containing ADMIN_PASSWORD key
                     type: string
+                  driverDownloadImage:
+                    default: registry.access.redhat.com/ubi9/ubi-minimal:latest
+                    description: |-
+                      Image used by the init container that downloads the JDBC driver.
+                      The Pega installer's own curl cannot complete a TLS handshake on
+                      FIPS-enabled clusters, so the download is delegated to this image and
+                      handed to the installer as a local file. Override to a mirrored image
+                      on disconnected clusters.
+                    type: string
                   image:
                     description: Pega installer container image
                     type: string

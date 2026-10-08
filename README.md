@@ -381,6 +381,19 @@ Requires the **AMQ Streams** (Strimzi) operator to be installed when `managed: t
 | `adminPassword` | `string` | — | Initial password for `administrator@pega.com` |
 | `adminPasswordSecret` | `string` | — | Name of a Secret containing an `ADMIN_PASSWORD` key. Overrides `adminPassword`. |
 | `upgradeType` | `string` | `in-place` | Upgrade type. One of: `in-place`, `zero-downtime`, `custom`, `out-of-place-rules`, `out-of-place-data` |
+| `driverDownloadImage` | `string` | `registry.access.redhat.com/ubi9/ubi-minimal:latest` | Image for the init container that downloads the JDBC driver. Override to a mirrored image on disconnected clusters. See [JDBC driver handling](#jdbc-driver-handling). |
+
+### JDBC driver handling
+
+The operator never lets the Pega installer download the JDBC driver itself. Instead it adds an init container to the installer Job that fetches `database.driverUri` into a shared volume, then hands the installer a local `file://` path.
+
+This is automatic — `database.driverUri` already defaults to the PostgreSQL driver, so no configuration is required.
+
+The indirection exists because **the Pega installer image's `curl` cannot complete a TLS handshake on FIPS-enabled clusters**, failing with `curl: (35) Insufficient randomness`. Since GovCloud and many regulated environments run FIPS, delegating the download to a UBI-based container (whose OpenSSL is FIPS-validated) makes the operator work in both modes with a single code path. It mirrors the `global.downloadContainer` option in Pega's own Helm chart.
+
+It also enables disconnected installs: point `driverUri` at an internal mirror and `driverDownloadImage` at a mirrored UBI, and nothing reaches the public internet.
+
+To supply the driver yourself — for example baked into a custom installer image — set `database.driverUri` to an empty string. No init container is added, and Pega's installer skips driver handling entirely.
 
 ---
 
@@ -663,6 +676,8 @@ oc delete pod -n pega-operator -l control-plane=controller-manager
 | CatalogSource `READY` but no PackageManifest, operator absent from the console | `catalog.yaml` hand-written with only an `olm.package` property. OLM cannot build a PackageManifest without the CSV metadata and will not pull the bundle image to find it | Regenerate `catalog.yaml` with `opm render` (see below), rebuild and push the catalog, then delete and re-apply the CatalogSource |
 | Console shows stale CR defaults after a CSV edit | Catalog still serving the previously embedded CSV | Rebuild the **bundle first**, then re-render `catalog.yaml` from the new bundle, then rebuild the catalog — in that order |
 | `ImagePullBackOff` after copying images between namespaces with `oc tag` | Tag defaults to `referencePolicy: Source`, which resolves back to the source namespace and requires `system:image-puller` there | Re-tag with `--reference-policy=local` so the registry serves the image through the destination namespace |
+| Installer fails with `curl: (35) Insufficient randomness` / `Could not download jar` | FIPS-enabled cluster. The Pega installer image's curl cannot complete a TLS handshake; the cluster's network is fine | Already handled — the operator downloads the driver in a UBI init container and passes a local `file://` path. If you see this, the operator predates that fix. See [JDBC driver handling](#jdbc-driver-handling) |
+| Installer Job stays `Failed` and is never retried | `reconcileInstaller` returns an error on a failed Job rather than recreating it, to avoid masking a real installation failure | Delete the Job (`oc delete job <name>-installer -n <ns>`); the operator builds a fresh one on the next reconcile |
 
 ## License
 

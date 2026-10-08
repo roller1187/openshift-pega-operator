@@ -248,6 +248,14 @@ type InstallerSpec struct {
 	// Upgrade type: in-place, zero-downtime, custom, out-of-place-rules, out-of-place-data
 	// +kubebuilder:default="in-place"
 	UpgradeType string `json:"upgradeType,omitempty"`
+
+	// Image used by the init container that downloads the JDBC driver.
+	// The Pega installer's own curl cannot complete a TLS handshake on
+	// FIPS-enabled clusters, so the download is delegated to this image and
+	// handed to the installer as a local file. Override to a mirrored image
+	// on disconnected clusters.
+	// +kubebuilder:default="registry.access.redhat.com/ubi9/ubi-minimal:latest"
+	DriverDownloadImage string `json:"driverDownloadImage,omitempty"`
 }
 
 // TierSpec defines a Pega platform tier (web, batch, stream, etc.).
