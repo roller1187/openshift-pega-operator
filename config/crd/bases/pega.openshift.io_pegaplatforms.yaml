@@ -105,6 +105,19 @@ spec:
                     description: Database username
                     type: string
                 type: object
+              fips140_3Mode:
+                default: false
+                description: |-
+                  Run Pega in FIPS 140-3 mode. Sets FIPS_140_3_MODE=true on the installer
+                  and on every tier, which puts Pega on its Bouncy Castle FIPS provider
+                  (-Dorg.bouncycastle.fips.approved_only=true) and enables high-security
+                  crypto. Running on a FIPS-enabled cluster does not by itself put Pega in
+                  FIPS mode; this flag does.
+
+                  This changes cryptographic behavior, including password hashing, so it is
+                  applied to the installer and the tiers together. Changing it after the
+                  schema has been installed is not supported.
+                type: boolean
               imageRegistry:
                 description: Container image registry settings
                 properties:

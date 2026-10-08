@@ -120,6 +120,17 @@ func (r *PegaPlatformReconciler) reconcileTierDeployment(ctx context.Context, pe
 	maxSurge := intstr.FromInt32(1)
 	maxUnavailable := intstr.FromInt32(0)
 
+	// Tiers run the same Pega image as the installer and would otherwise fetch
+	// the JDBC driver over TLS on startup, which fails under FIPS.
+	var initContainers []corev1.Container
+	var volumes []corev1.Volume
+	dlContainer, dlVolume, driverMounts := jdbcDriverDownload(
+		pega.Spec.Database.DriverURI, pega.Spec.Installer.DriverDownloadImage)
+	if dlContainer != nil {
+		initContainers = append(initContainers, *dlContainer)
+		volumes = append(volumes, *dlVolume)
+	}
+
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      depName,
@@ -139,6 +150,8 @@ func (r *PegaPlatformReconciler) reconcileTierDeployment(ctx context.Context, pe
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					InitContainers: initContainers,
+					Volumes:        volumes,
 					Containers: []corev1.Container{
 						{
 							Name:  "pega",
@@ -146,7 +159,8 @@ func (r *PegaPlatformReconciler) reconcileTierDeployment(ctx context.Context, pe
 							Ports: []corev1.ContainerPort{
 								{Name: "app", ContainerPort: 8080, Protocol: corev1.ProtocolTCP},
 							},
-							Env:       env,
+							Env:          env,
+							VolumeMounts: driverMounts,
 							EnvFrom: []corev1.EnvFromSource{
 								{
 									ConfigMapRef: &corev1.ConfigMapEnvSource{
@@ -403,7 +417,9 @@ func (r *PegaPlatformReconciler) buildTierEnv(pega *pegav1alpha1.PegaPlatform, t
 		{Name: "JDBC_URL", Value: jdbcURL},
 		{Name: "JDBC_CLASS", Value: db.DriverClass},
 		{Name: "DB_TYPE", Value: db.Type},
-		{Name: "JDBC_DRIVER_URI", Value: db.DriverURI},
+		// Points at the copy staged by the download-jdbc-driver init container,
+		// so the tier never fetches it over TLS. See jdbcDriverDownload.
+		{Name: "JDBC_DRIVER_URI", Value: localJDBCDriverURIs(db.DriverURI)},
 		{Name: "RULES_SCHEMA", Value: db.RulesSchema},
 		{Name: "DATA_SCHEMA", Value: db.DataSchema},
 		{Name: "JDBC_MAX_ACTIVE", Value: "75"},
@@ -415,6 +431,10 @@ func (r *PegaPlatformReconciler) buildTierEnv(pega *pegav1alpha1.PegaPlatform, t
 		{Name: "JDBC_TIMEOUT_PROPERTIES", Value: "socketTimeout=90"},
 		{Name: "JDBC_TIMEOUT_PROPERTIES_RW", Value: "socketTimeout=90"},
 		{Name: "JDBC_TIMEOUT_PROPERTIES_RO", Value: "socketTimeout=90"},
+	}
+
+	if pega.Spec.FIPS1403Mode {
+		env = append(env, corev1.EnvVar{Name: "FIPS_140_3_MODE", Value: "true"})
 	}
 
 	if db.CredentialsSecret != "" {

@@ -39,6 +39,44 @@ done
 ls -l "$DEST_DIR"
 `
 
+// jdbcDriverDownload builds the init container, volume and mount that stage the
+// JDBC driver on local disk. Both the installer Job and the platform tiers need
+// this: each runs a Pega image that would otherwise fetch the driver itself over
+// TLS, which fails on FIPS-enabled clusters. Returns nils when no driver URI is
+// configured.
+func jdbcDriverDownload(driverURI, downloadImage string) (*corev1.Container, *corev1.Volume, []corev1.VolumeMount) {
+	if localJDBCDriverURIs(driverURI) == "" {
+		return nil, nil, nil
+	}
+	if downloadImage == "" {
+		downloadImage = defaultDriverDownloadImage
+	}
+	mounts := []corev1.VolumeMount{{Name: jdbcDriverVolumeName, MountPath: jdbcDriverMountPath}}
+	return &corev1.Container{
+			Name:    "download-jdbc-driver",
+			Image:   downloadImage,
+			Command: []string{"/bin/sh", "-c", jdbcDriverDownloadScript},
+			Env: []corev1.EnvVar{
+				{Name: "DRIVER_URIS", Value: driverURI},
+				{Name: "DEST_DIR", Value: jdbcDriverMountPath},
+			},
+			VolumeMounts: mounts,
+			Resources: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("64Mi"),
+					corev1.ResourceCPU:    resource.MustParse("50m"),
+				},
+				Limits: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("256Mi"),
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+				},
+			},
+		}, &corev1.Volume{
+			Name:         jdbcDriverVolumeName,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+		}, mounts
+}
+
 // localJDBCDriverURIs maps the user-supplied driver URIs onto the local file://
 // paths the init container writes them to. Returns "" for empty input, which
 // makes Pega's installer skip driver handling entirely.
@@ -124,6 +162,10 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 		{Name: "DATA_SCHEMA", Value: db.DataSchema},
 	}
 
+	if pega.Spec.FIPS1403Mode {
+		env = append(env, corev1.EnvVar{Name: "FIPS_140_3_MODE", Value: "true"})
+	}
+
 	if db.CredentialsSecret != "" {
 		env = append(env,
 			corev1.EnvVar{
@@ -181,41 +223,11 @@ func (r *PegaPlatformReconciler) reconcileInstaller(ctx context.Context, pega *p
 
 	var initContainers []corev1.Container
 	var volumes []corev1.Volume
-	var driverMounts []corev1.VolumeMount
 
-	if localDriverURIs != "" {
-		downloadImage := inst.DriverDownloadImage
-		if downloadImage == "" {
-			downloadImage = defaultDriverDownloadImage
-		}
-		volumes = append(volumes, corev1.Volume{
-			Name:         jdbcDriverVolumeName,
-			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
-		})
-		driverMounts = append(driverMounts, corev1.VolumeMount{
-			Name:      jdbcDriverVolumeName,
-			MountPath: jdbcDriverMountPath,
-		})
-		initContainers = append(initContainers, corev1.Container{
-			Name:    "download-jdbc-driver",
-			Image:   downloadImage,
-			Command: []string{"/bin/sh", "-c", jdbcDriverDownloadScript},
-			Env: []corev1.EnvVar{
-				{Name: "DRIVER_URIS", Value: db.DriverURI},
-				{Name: "DEST_DIR", Value: jdbcDriverMountPath},
-			},
-			VolumeMounts: driverMounts,
-			Resources: corev1.ResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("64Mi"),
-					corev1.ResourceCPU:    resource.MustParse("50m"),
-				},
-				Limits: corev1.ResourceList{
-					corev1.ResourceMemory: resource.MustParse("256Mi"),
-					corev1.ResourceCPU:    resource.MustParse("500m"),
-				},
-			},
-		})
+	dlContainer, dlVolume, driverMounts := jdbcDriverDownload(db.DriverURI, inst.DriverDownloadImage)
+	if dlContainer != nil {
+		initContainers = append(initContainers, *dlContainer)
+		volumes = append(volumes, *dlVolume)
 	}
 
 	if pega.Spec.Database.Managed {

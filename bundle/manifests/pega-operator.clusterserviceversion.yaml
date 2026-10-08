@@ -139,6 +139,11 @@ spec:
             description: Container registry URL where Pega images are stored
             x-descriptors:
               - "urn:alm:descriptor:com.tectonic.ui:text"
+          - path: fips140_3Mode
+            displayName: FIPS 140-3 Mode
+            description: "Run Pega with its Bouncy Castle FIPS provider and high-security crypto. Enable this on FIPS-enabled clusters — running on a FIPS host does not by itself put Pega in FIPS mode. This changes cryptographic behavior including password hashing and must be set before the schema is installed; it cannot be changed afterwards."
+            x-descriptors:
+              - "urn:alm:descriptor:com.tectonic.ui:booleanSwitch"
           - path: imageRegistry.pullSecretNames
             displayName: Image Pull Secrets
             description: Names of secrets for pulling images from private registries

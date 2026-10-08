@@ -52,6 +52,18 @@ type PegaPlatformSpec struct {
 	// Pega platform container image
 	// +kubebuilder:validation:Required
 	PegaImage string `json:"pegaImage"`
+
+	// Run Pega in FIPS 140-3 mode. Sets FIPS_140_3_MODE=true on the installer
+	// and on every tier, which puts Pega on its Bouncy Castle FIPS provider
+	// (-Dorg.bouncycastle.fips.approved_only=true) and enables high-security
+	// crypto. Running on a FIPS-enabled cluster does not by itself put Pega in
+	// FIPS mode; this flag does.
+	//
+	// This changes cryptographic behavior, including password hashing, so it is
+	// applied to the installer and the tiers together. Changing it after the
+	// schema has been installed is not supported.
+	// +kubebuilder:default=false
+	FIPS1403Mode bool `json:"fips140_3Mode,omitempty"`
 }
 
 // DatabaseSpec configures the relational database backend.
@@ -205,7 +217,6 @@ type StreamSpec struct {
 	// Topic replication factor
 	// +kubebuilder:default=3
 	ReplicationFactor int32 `json:"replicationFactor,omitempty"`
-
 }
 
 // SRSSpec configures the Pega Search and Reporting Service.
@@ -404,12 +415,12 @@ const (
 )
 
 const (
-	ConditionDatabaseReady  = "DatabaseReady"
-	ConditionSearchReady    = "SearchReady"
-	ConditionStreamReady    = "StreamReady"
-	ConditionSRSReady       = "SRSReady"
-	ConditionInstallerDone  = "InstallerComplete"
-	ConditionPlatformReady  = "PlatformReady"
+	ConditionDatabaseReady = "DatabaseReady"
+	ConditionSearchReady   = "SearchReady"
+	ConditionStreamReady   = "StreamReady"
+	ConditionSRSReady      = "SRSReady"
+	ConditionInstallerDone = "InstallerComplete"
+	ConditionPlatformReady = "PlatformReady"
 )
 
 func init() {
